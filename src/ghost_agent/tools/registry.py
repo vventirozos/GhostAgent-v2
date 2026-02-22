@@ -106,7 +106,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "postgres_admin",
-            "description": "MANDATORY for executing SQL queries, fetching schemas, running EXPLAIN ANALYZE, and checking active queries in a PostgreSQL database.",
+            "description": "MANDATORY for executing SQL queries, fetching schemas, running EXPLAIN ANALYZE, and checking active queries in a PostgreSQL database. WARNING: DO NOT use this tool if the user merely asks you to 'examine', 'explain', 'describe', or 'review' a SQL query. Only use this if explicitly instructed to run, execute, or test the query against a live database.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -134,9 +134,42 @@ TOOL_DEFINITIONS = [
     }
 ]
 
+def get_active_tool_definitions(context):
+    active_tools = list(TOOL_DEFINITIONS)
+    
+    if context and getattr(context.llm_client, 'vision_clients', None):
+        active_tools.append({
+            "type": "function",
+            "function": {
+                "name": "vision_analysis",
+                "description": "Send an image or PDF to a Vision AI for analysis (OCR, graph reading, or picture description).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["graph_analysis", "describe_picture", "extract_text_picture", "extract_text_pdf"],
+                            "description": "The exact operation to perform."
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "Local sandbox path to the image/pdf OR an HTTP/HTTPS URL."
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "Optional specific questions or instructions for the analysis."
+                        }
+                    },
+                    "required": ["action", "target"]
+                }
+            }
+        })
+        
+    return active_tools
+
 def get_available_tools(context):
     from .memory import tool_dream_mode # Lazy import to avoid circular dependencies
-    return {
+    tools = {
         "system_utility": lambda **kwargs: tool_system_utility(tor_proxy=context.tor_proxy, profile_memory=context.profile_memory, context=context, **kwargs),
         "file_system": lambda **kwargs: tool_file_system(sandbox_dir=context.sandbox_dir, tor_proxy=context.tor_proxy, **kwargs),
         "knowledge_base": lambda **kwargs: tool_knowledge_base(sandbox_dir=context.sandbox_dir, memory_system=context.memory_system, profile_memory=context.profile_memory, **kwargs),
@@ -145,7 +178,7 @@ def get_available_tools(context):
         "learn_skill": lambda **kwargs: tool_learn_skill(skill_memory=context.skill_memory, memory_system=context.memory_system, **kwargs),
         "web_search": lambda **kwargs: tool_search(anonymous=context.args.anonymous, tor_proxy=context.tor_proxy, **kwargs),
         "deep_research": lambda **kwargs: tool_deep_research(anonymous=context.args.anonymous, tor_proxy=context.tor_proxy, **kwargs),
-        "fact_check": lambda **kwargs: tool_fact_check(llm_client=context.llm_client, model_name=context.args.model if hasattr(context.args, 'model') else "Qwen3-4B-Instruct-2507", tool_definitions=TOOL_DEFINITIONS, deep_research_callable=lambda q: tool_deep_research(query=q, anonymous=context.args.anonymous, tor_proxy=context.tor_proxy), **kwargs),
+        "fact_check": lambda **kwargs: tool_fact_check(llm_client=context.llm_client, model_name=getattr(context.args, 'model', "Qwen3-4B-Instruct-2507"), tool_definitions=get_active_tool_definitions(context), deep_research_callable=lambda q: tool_deep_research(query=q, anonymous=context.args.anonymous, tor_proxy=context.tor_proxy), **kwargs),
         "update_profile": lambda **kwargs: tool_update_profile(profile_memory=context.profile_memory, memory_system=context.memory_system, **kwargs),
         "scratchpad": lambda **kwargs: tool_scratchpad(scratchpad=context.scratchpad, **kwargs),
         "manage_tasks": lambda **kwargs: tool_manage_tasks(scheduler=context.scheduler, memory_system=context.memory_system, **kwargs),
@@ -154,3 +187,9 @@ def get_available_tools(context):
         "postgres_admin": lambda **kwargs: tool_postgres_admin(**kwargs),
         "delegate_to_swarm": lambda **kwargs: tool_delegate_to_swarm(llm_client=context.llm_client, model_name=getattr(context.args, 'model', 'default'), scratchpad=context.scratchpad, **kwargs)
     }
+    
+    if getattr(context.llm_client, 'vision_clients', None):
+        from .vision import tool_vision_analysis
+        tools["vision_analysis"] = lambda **kwargs: tool_vision_analysis(llm_client=context.llm_client, sandbox_dir=context.sandbox_dir, tor_proxy=context.tor_proxy, **kwargs)
+        
+    return tools

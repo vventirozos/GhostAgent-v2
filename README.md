@@ -1,7 +1,6 @@
-# Ghost Agent version 2.0 👻
+# Ghost Agent 👻
 
-Ghost Agent is an advanced, autonomous AI service designed for deep reasoning, robust tool execution, and continuous learning. Functioning as a high-tier autonomous software engineer, it is capable of complex operations encompassing full codebase management, internet research, system execution via Docker, and self-correction. The agent has moved to a mac mini m4 16GB the project has been practically rewritten (using antigravity and gemini 3.1) to take advantage of the new hardware. Optionally it is now asynchronously offloading tasks to a jetson nano orin 8GB. All llms (primary, worker, swarm) are loaded using llama-server, the agent's main model is Huihui-Qwen3-4B-Instruct-2507-abliterated.Q8_0.gguf with 65k context window and the secondary LLM on the Nano, that also acts as an Adversarial code critic is running Qwen2.5-Coder-3B-Instruct-abliterated.Q8_0.gguf with 16k context window. Offloading is optional and the Agent, should (theoretically) run on a single Jetson nano 8gb using a Q4 model and 16k context window, although speed is going to suffer... massively.
-
+Ghost Agent is an advanced, autonomous AI service designed for deep reasoning, robust tool execution, and continuous learning. Functioning as a high-tier autonomous software engineer, it is capable of complex operations encompassing full codebase management, internet research, system execution via Docker, and self-correction.
 
 ## Core Capabilities
 

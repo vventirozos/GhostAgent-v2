@@ -9,7 +9,7 @@ from ..utils.helpers import get_utc_timestamp
 logger = logging.getLogger("GhostAgent")
 
 class LLMClient:
-    def __init__(self, upstream_url: str, tor_proxy: str = None, swarm_nodes: list = None, worker_nodes: list = None):
+    def __init__(self, upstream_url: str, tor_proxy: str = None, swarm_nodes: list = None, worker_nodes: list = None, visual_nodes: list = None):
         self.upstream_url = upstream_url
         limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
         
@@ -67,11 +67,32 @@ class LLMClient:
                     "model": node["model"]
                 })
 
+        self.vision_clients = []
+        self._vision_index = 0
+        
+        if visual_nodes:
+            for node in visual_nodes:
+                client = httpx.AsyncClient(
+                    base_url=node["url"], 
+                    timeout=600.0, 
+                    limits=limits,
+                    proxy=proxy_url,
+                    follow_redirects=True,
+                    http2=False
+                )
+                self.vision_clients.append({
+                    "client": client,
+                    "url": node["url"],
+                    "model": node["model"]
+                })
+
     async def close(self):
         await self.http_client.aclose()
         for node in getattr(self, 'swarm_clients', []):
             await node["client"].aclose()
         for node in getattr(self, 'worker_clients', []):
+            await node["client"].aclose()
+        for node in getattr(self, 'vision_clients', []):
             await node["client"].aclose()
 
     def get_swarm_node(self, target_model: str = None) -> Optional[Dict[str, Any]]:
@@ -86,6 +107,24 @@ class LLMClient:
                     
         node = self.swarm_clients[self._swarm_index]
         self._swarm_index = (self._swarm_index + 1) % len(self.swarm_clients)
+        return node
+
+    def get_vision_node(self, target_model: str = None) -> Optional[Dict[str, Any]]:
+        vision_clients = getattr(self, 'vision_clients', [])
+        if not vision_clients:
+            return None
+            
+        if target_model:
+            target_lower = target_model.lower()
+            for node in vision_clients:
+                if target_lower in node["model"].lower():
+                    return node
+                    
+        if not hasattr(self, '_vision_index'):
+            self._vision_index = 0
+            
+        node = vision_clients[self._vision_index]
+        self._vision_index = (self._vision_index + 1) % len(vision_clients)
         return node
 
     def get_worker_node(self, target_model: str = None) -> Optional[Dict[str, Any]]:
@@ -106,10 +145,48 @@ class LLMClient:
         self._worker_index = (self._worker_index + 1) % len(worker_clients)
         return node
 
-    async def chat_completion(self, payload: Dict[str, Any], use_swarm: bool = False, use_worker: bool = False) -> Dict[str, Any]:
+    async def chat_completion(self, payload: Dict[str, Any], use_swarm: bool = False, use_worker: bool = False, use_vision: bool = False) -> Dict[str, Any]:
         """
         Sends a chat completion request to the upstream LLM with robust retry logic.
         """
+        if use_vision and getattr(self, 'vision_clients', None):
+            target_model = payload.get("model")
+            tried_nodes = []
+            
+            node = self.get_vision_node(target_model)
+            
+            if node:
+                for _ in range(len(self.vision_clients)):
+                    if not node:
+                        break
+                        
+                    if node in tried_nodes:
+                        target_model = None
+                        node = self.get_vision_node(target_model)
+                        
+                    loop_breaker = 0
+                    while node in tried_nodes and loop_breaker < len(self.vision_clients):
+                        node = self.get_vision_node(None)
+                        loop_breaker += 1
+                        
+                    tried_nodes.append(node)
+                    
+                    pretty_log("Vision Compute", f"Routing request to Vision Node ({node['model']})", level="INFO", icon=Icons.TOOL_DEEP)
+                    try:
+                        node_payload = payload.copy()
+                        node_payload["model"] = node["model"]
+                        
+                        resp = await node["client"].post("/v1/chat/completions", json=node_payload)
+                        resp.raise_for_status()
+                        return resp.json()
+                    except Exception as e:
+                        pretty_log(f"Vision node ({node['model']}) failed: {type(e).__name__}, trying next...", level="WARNING", icon=Icons.WARN)
+                        target_model = None
+                        node = self.get_vision_node(target_model)
+                        continue
+                    
+                pretty_log("Vision Compute Failed", "All vision nodes failed, falling back to main upstream", level="WARNING", icon=Icons.WARN)
+
         if use_worker and getattr(self, 'worker_clients', None):
             target_model = payload.get("model")
             tried_nodes = []

@@ -67,6 +67,7 @@ def parse_args():
     parser.add_argument("--upstream-url", default="http://127.0.0.1:8080")
     parser.add_argument("--swarm-nodes", default=None, help="Comma-separated list of url|model nodes")
     parser.add_argument("--worker-nodes", default=None, help="Comma-separated list of url|model nodes for background/edge tasks")
+    parser.add_argument("--visual-nodes", default=None, help="Comma-separated list of url|model nodes for vision models")
     parser.add_argument("--model", default=os.getenv("GHOST_MODEL", "Qwen3-8B-Instruct-2507"))
     parser.add_argument("--temperature", "-t", type=float, default=0.7)
     parser.add_argument("--daemon", "-d", action="store_true")
@@ -100,6 +101,16 @@ def parse_args():
                 worker_nodes_list.append({"url": url, "model": model})
     args.worker_nodes_parsed = worker_nodes_list
 
+    visual_nodes_list = []
+    if args.visual_nodes:
+        for node_str in args.visual_nodes.split(","):
+            parts = node_str.split("|")
+            url = parts[0].strip().replace("http:://", "http://").replace("https:://", "https://")
+            model = parts[1].strip() if len(parts) > 1 else "default"
+            if url:
+                visual_nodes_list.append({"url": url, "model": model})
+    args.visual_nodes_parsed = visual_nodes_list
+
     if args.upstream_url:
         args.upstream_url = args.upstream_url.replace("http:://", "http://").replace("https:://", "https://")
     return args
@@ -114,7 +125,7 @@ async def lifespan(app):
     GLOBAL_CONTEXT = context
 
     
-    context.llm_client = LLMClient(args.upstream_url, context.tor_proxy, args.swarm_nodes_parsed, args.worker_nodes_parsed)
+    context.llm_client = LLMClient(args.upstream_url, context.tor_proxy, args.swarm_nodes_parsed, args.worker_nodes_parsed, getattr(args, 'visual_nodes_parsed', None))
     
     pretty_log("System Boot", "Initializing components", icon=Icons.SYSTEM_BOOT)
 

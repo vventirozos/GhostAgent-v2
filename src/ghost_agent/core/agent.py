@@ -19,7 +19,7 @@ from .prompts import SYSTEM_PROMPT, CODE_SYSTEM_PROMPT, SMART_MEMORY_PROMPT, PLA
 from .planning import TaskTree, TaskStatus
 from ..utils.logging import Icons, pretty_log, request_id_context
 from ..utils.token_counter import estimate_tokens
-from ..tools.registry import get_available_tools, TOOL_DEFINITIONS
+from ..tools.registry import get_available_tools, TOOL_DEFINITIONS, get_active_tool_definitions
 from ..tools.tasks import tool_list_tasks
 from ..memory.skills import SkillMemory
 
@@ -403,7 +403,7 @@ class GhostAgent:
                         last_tool_output = self._prepare_planning_context(tools_run_this_turn[-2:])
                         recent_transcript = self._get_recent_transcript(messages)
                             
-                        available_tools_list = ", ".join(self.available_tools.keys())
+                        available_tools_list = ", ".join([t["function"]["name"] for t in get_active_tool_definitions(self.context)])
                         planning_prompt = f"""
 ### CURRENT SITUATION
 SCRAPBOOK:
@@ -418,7 +418,7 @@ Last Tool Output: {last_tool_output}
 
 ### AVAILABLE NATIVE TOOLS
 [{available_tools_list}]
-CRITICAL INSTRUCTION: You MUST explicitly name the native JSON tool you intend to use for the next step in your task description. DO NOT plan to write Python scripts for tasks that have a dedicated native tool (like downloading files or memory ingestion).
+CRITICAL INSTRUCTION: If an action requires a tool, explicitly name the native JSON tool you intend to use. DO NOT plan to write Python scripts for tasks that have a dedicated native tool. If the user is just asking a question or requesting a code/SQL explanation, set "next_action_id" to "none" and do NOT plan to use a tool.
 
 ### TEMPORAL ANCHOR (READ CAREFULLY)
 You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is already DONE. NEVER revert a 'DONE' task back to 'PENDING'.
@@ -485,7 +485,13 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                     if has_coding_intent:
                         dynamic_state += f"CURRENT SANDBOX STATE:\n{sandbox_state}\n\n"
                     if use_plan and not is_trivial and 'thought_content' in locals() and thought_content:
-                        dynamic_state += f"ACTIVE STRATEGY & PLAN:\nTHOUGHT: {thought_content}\nPLAN:\n{task_tree.render()}\nFOCUS TASK: {next_action_id}\nCRITICAL INSTRUCTION: Execute ONLY the tool required for the FOCUS TASK.\n"
+                        dynamic_state += f"ACTIVE STRATEGY & PLAN:\nTHOUGHT: {thought_content}\nPLAN:\n{task_tree.render()}\nFOCUS TASK: {next_action_id}\n"
+                        
+                        if str(next_action_id).strip().lower() == "none":
+                            dynamic_state += "CRITICAL INSTRUCTION: DO NOT USE TOOLS this turn. Answer the user directly.\n"
+                            force_final_response = True
+                        else:
+                            dynamic_state += "CRITICAL INSTRUCTION: Execute ONLY the tool required for the FOCUS TASK.\n"
 
                     req_messages = list(messages)
                     req_messages.append({"role": "system", "content": dynamic_state.strip()})
@@ -494,7 +500,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                         "model": model, 
                         "messages": req_messages, 
                         "stream": False, 
-                        "tools": TOOL_DEFINITIONS, 
+                        "tools": get_active_tool_definitions(self.context), 
                         "tool_choice": "none" if force_final_response else "auto", 
                         "temperature": active_temp, 
                         "frequency_penalty": 0.5,

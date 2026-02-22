@@ -6,6 +6,8 @@ from ghost_agent.core.agent import GhostAgent, GhostContext
 @pytest.fixture
 def mock_agent():
     ctx = MagicMock(spec=GhostContext)
+    ctx.llm_client = MagicMock()
+    ctx.llm_client.vision_clients = None
     # Mocking attributes accessed in specific methods if needed
     agent = GhostAgent(context=ctx)
     return agent

@@ -23,8 +23,8 @@ def test_code_system_prompt_positive_isolation():
     
 def test_planning_system_prompt_tool_binding():
     """Verify the Planner explicitly performs Tool Binding."""
-    assert "6. TOOL BINDING:" in PLANNING_SYSTEM_PROMPT
-    assert "You MUST explicitly state WHICH JSON tool should be used" in PLANNING_SYSTEM_PROMPT
+    assert "7. TOOL BINDING:" in PLANNING_SYSTEM_PROMPT
+    assert "explicitly state WHICH JSON tool should be used" in PLANNING_SYSTEM_PROMPT
     assert "[Specific next tool action]" in PLANNING_SYSTEM_PROMPT
     assert "3. STATE UPDATE: If a sub-task is complete, you MUST change its status to \"DONE\"" in PLANNING_SYSTEM_PROMPT
 
