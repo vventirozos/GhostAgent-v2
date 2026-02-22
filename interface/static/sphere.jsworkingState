@@ -1,0 +1,272 @@
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+let scene, camera, renderer, composer, sphere, material;
+let time = 0;
+let noiseTime = 0; // Accumulates smoothly to prevent snapping
+let currentSpeed = 0.003; 
+let spikeStrength = 0.25;
+let targetSpikeStrength = 0.25;
+let errorState = 0.0;   // SAFARI FIX: Use floats instead of booleans for shaders
+let workingState = 0.0; // SAFARI FIX: Use floats instead of booleans for shaders
+
+// VERTEX SHADER
+const vertexShader = `
+precision highp float; // SAFARI FIX: Required by Apple WebGL
+
+uniform float uNoiseTime; 
+uniform float uSpikeStrength;
+varying vec3 vNormal;
+varying vec3 vViewPosition;
+varying float vDisplacement;
+
+// Simplex 3D Noise
+vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+float snoise(vec3 v) {
+    const vec2  C = vec2(1.0/6.0, 1.0/3.0);
+    const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+    vec3 i  = floor(v + dot(v, C.yyy));
+    vec3 x0 = v - i + dot(i, C.xxx);
+    vec3 g = step(x0.yzx, x0.xyz);
+    vec3 l = 1.0 - g;
+    vec3 i1 = min( g.xyz, l.zxy );
+    vec3 i2 = max( g.xyz, l.zxy );
+    vec3 x1 = x0 - i1 + C.xxx;
+    vec3 x2 = x0 - i2 + C.yyy;
+    vec3 x3 = x0 - D.yyy;
+    i = mod289(i);
+    vec4 p = permute( permute( permute( i.z + vec4(0.0, i1.z, i2.z, 1.0 )) + i.y + vec4(0.0, i1.y, i2.y, 1.0 )) + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+    float n_ = 0.142857142857;
+    vec3  ns = n_ * D.wyz - D.xzx;
+    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+    vec4 x_ = floor(j * ns.z);
+    vec4 y_ = floor(j - 7.0 * x_ );
+    vec4 x = x_ *ns.x + ns.yyyy;
+    vec4 y = y_ *ns.x + ns.yyyy;
+    vec4 h = 1.0 - abs(x) - abs(y);
+    vec4 b0 = vec4( x.xy, y.xy );
+    vec4 b1 = vec4( x.zw, y.zw );
+    vec4 s0 = floor(b0)*2.0 + 1.0;
+    vec4 s1 = floor(b1)*2.0 + 1.0;
+    vec4 sh = -step(h, vec4(0.0));
+    vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+    vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+    vec3 p0 = vec3(a0.xy,h.x);
+    vec3 p1 = vec3(a0.zw,h.y);
+    vec3 p2 = vec3(a1.xy,h.z);
+    vec3 p3 = vec3(a1.zw,h.w);
+    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+    m = m * m;
+    return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
+}
+
+void main() {
+    // 3 Layers of noise for a highly active, boiling, organic effect
+    float noise1 = snoise(position * 1.5 + uNoiseTime);
+    float noise2 = snoise(position * 2.5 - uNoiseTime * 0.8) * 0.5;
+    float noise3 = snoise(position * 4.0 + uNoiseTime * 1.5) * 0.25;
+    
+    float displacement = (noise1 + noise2 + noise3) * uSpikeStrength;
+    
+    // Add baseline writhing so it is constantly alive even when idle
+    displacement += noise1 * 0.1;
+    vDisplacement = displacement;
+    
+    vec3 newPosition = position + normal * displacement;
+    
+    // Convert to ViewSpace for accurate edge lighting
+    vec4 mvPosition = modelViewMatrix * vec4(newPosition, 1.0);
+    vViewPosition = -mvPosition.xyz;
+    vNormal = normalMatrix * normal;
+    
+    gl_Position = projectionMatrix * mvPosition;
+}
+`;
+
+// FRAGMENT SHADER
+const fragmentShader = `
+precision highp float; // SAFARI FIX
+
+uniform float uTime;
+uniform float uErrorState;   // SAFARI FIX
+uniform float uWorkingState; // SAFARI FIX
+
+varying vec3 vNormal;
+varying vec3 vViewPosition;
+varying float vDisplacement;
+
+void main() {
+    vec3 normal = normalize(vNormal);
+    vec3 viewDir = normalize(vViewPosition);
+    
+    // Smooth, uniform edge glow facing the camera
+    // SAFARI FIX: abs() prevents crash if dot product goes below 0
+    float fresnel = max(0.0, 1.0 - dot(normal, viewDir));
+    fresnel = pow(abs(fresnel), 2.0); 
+    
+    // Deep abyssal void colors
+    vec3 cPurple = vec3(0.08, 0.0, 0.16);
+    vec3 cBlue   = vec3(0.0, 0.03, 0.12);
+    vec3 cGreen  = vec3(0.0, 0.08, 0.04);
+    vec3 cBlack  = vec3(0.02, 0.02, 0.03);
+    
+    float t = uTime * 0.15; 
+    float cycle = mod(t, 4.0);
+    vec3 baseColor;
+    
+    if (cycle < 1.0) baseColor = mix(cPurple, cBlue, cycle);
+    else if (cycle < 2.0) baseColor = mix(cBlue, cGreen, cycle - 1.0);
+    else if (cycle < 3.0) baseColor = mix(cGreen, cBlack, cycle - 2.0);
+    else baseColor = mix(cBlack, cPurple, cycle - 3.0);
+    
+    // Dynamic contrast based on displacement
+    float brightness = 0.7 + (vDisplacement * 0.6); 
+    
+    // Active throbbing when working
+    brightness += uWorkingState * (sin(uTime * 4.0) * 0.15); 
+    baseColor *= (1.0 + (uWorkingState * 0.4));
+    
+    vec3 color = baseColor * brightness;
+    
+    // Eerie ghost rim-lighting
+    color += baseColor * fresnel * 2.5; 
+    
+    // Blood-red mix for Error State
+    vec3 errorColor = mix(vec3(0.1, 0.0, 0.0), vec3(0.3, 0.0, 0.02), vDisplacement + 0.5);
+    errorColor += vec3(0.6, 0.0, 0.0) * fresnel;
+    
+    gl_FragColor = vec4(mix(color, errorColor, uErrorState), 1.0);
+}
+`;
+
+export function initSphere() {
+    const container = document.getElementById('sphere-container');
+    scene = new THREE.Scene();
+    
+    // SAFARI FIX: Safari struggles with alpha backgrounds and Bloom passes. Set it here.
+    scene.background = new THREE.Color(0x030303);
+
+    camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+    camera.position.z = 4.5;
+    
+    // SAFARI FIX: alpha: false is required for stability on iOS WebGL
+    renderer = new THREE.WebGLRenderer({ alpha: false, antialias: true, powerPreference: "high-performance" });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    container.appendChild(renderer.domElement);
+
+    // SAFARI FIX: Explicitly define HalfFloatType Render Target
+    const renderTarget = new THREE.WebGLRenderTarget(
+        container.clientWidth, 
+        container.clientHeight, 
+        {
+            type: THREE.HalfFloatType,
+            format: THREE.RGBAFormat,
+            colorSpace: THREE.SRGBColorSpace,
+        }
+    );
+
+    const renderScene = new RenderPass(scene, camera);
+    const bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(container.clientWidth, container.clientHeight),
+        0.5,  // Strength (Muted, creepy mist)
+        1.2,  // Radius
+        0.1   // Threshold
+    );
+    
+    composer = new EffectComposer(renderer, renderTarget);
+    composer.addPass(renderScene);
+    composer.addPass(bloomPass);
+
+    const geometry = new THREE.IcosahedronGeometry(1.3, 64);
+    material = new THREE.ShaderMaterial({
+        vertexShader: vertexShader,
+        fragmentShader: fragmentShader,
+        uniforms: {
+            uTime: { value: 0 },
+            uNoiseTime: { value: 0 }, // Driven smoothly by JS
+            uSpikeStrength: { value: 0.25 },
+            uErrorState: { value: 0.0 }, // Float
+            uWorkingState: { value: 0.0 } // Float
+        }
+    });
+    
+    sphere = new THREE.Mesh(geometry, material);
+    scene.add(sphere);
+
+    window.addEventListener('resize', () => {
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        renderer.setSize(width, height);
+        composer.setSize(width, height);
+        renderTarget.setSize(width, height);
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+    });
+
+    animate();
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    
+    time += 0.01; 
+    material.uniforms.uTime.value = time;
+    
+    // SMOOTH TIME ACCUMULATION (Fixes the jumping/snapping bug)
+    let targetSpeed = 0.003; 
+    
+    if (errorState > 0.5) {
+        targetSpikeStrength = 1.0;
+        targetSpeed = 0.02;
+    } else if (workingState > 0.5) {
+        targetSpikeStrength = 0.5 + Math.sin(time * 3.0) * 0.15; // Active undulation
+        targetSpeed = 0.015;
+    } else {
+        targetSpikeStrength = 0.25 + Math.sin(time * 1.5) * 0.08; // Restless breathing
+        targetSpeed = 0.003; 
+    }
+    
+    // Smooth engine-like ramping
+    let lerpFactor = workingState > 0.5 ? 0.04 : (errorState > 0.5 ? 0.1 : 0.02);
+    spikeStrength += (targetSpikeStrength - spikeStrength) * lerpFactor;
+    currentSpeed += (targetSpeed - currentSpeed) * 0.05; 
+    
+    // Time only ticks forward, speed smoothly transitions, geometry never jumps
+    noiseTime += currentSpeed; 
+    material.uniforms.uNoiseTime.value = noiseTime; 
+    material.uniforms.uSpikeStrength.value = spikeStrength;
+    
+    // CONSTANT ACTIVE ROTATION
+    sphere.rotation.x += currentSpeed * 0.2;
+    sphere.rotation.y += currentSpeed * 0.5;
+    sphere.rotation.z += currentSpeed * 0.1;
+    
+    composer.render();
+}
+
+export function triggerSpike() {
+    errorState = 1.0;
+    material.uniforms.uErrorState.value = 1.0;
+    setTimeout(() => { 
+        errorState = 0.0; 
+        material.uniforms.uErrorState.value = 0.0;
+    }, 2000);
+}
+
+// Dummy functions so app.js doesn't crash if imported
+export function triggerPulse(colorHex) { return; }
+export function updateSphereColor(colorHex) { return; }
+
+export function setWorkingState(isWorking) {
+    workingState = isWorking ? 1.0 : 0.0;
+    material.uniforms.uWorkingState.value = workingState;
+}
