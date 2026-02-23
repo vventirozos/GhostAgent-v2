@@ -234,8 +234,8 @@ async def test_context_shield_edge_summary(agent):
         
         # Check that the 3rd call to the main LLM received the condensed edge summary
         final_call = agent.context.llm_client.chat_completion.call_args_list[2]
-        tool_response_msg = final_call.args[0]["messages"][-2]
-        assert tool_response_msg["role"] == "tool"
+        tool_response_msg = final_call.args[0]["messages"][-1]
+        assert tool_response_msg.get("role") == "tool"
         assert tool_response_msg["content"] == "[EDGE CONDENSED]: Summarized successfully."
         
         # Check logs

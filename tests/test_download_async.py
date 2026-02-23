@@ -13,7 +13,8 @@ async def test_tool_download_file_writes_asynchronously():
     mock_content = b"chunk1chunk2"
     
     # Mock httpx client
-    with patch("ghost_agent.tools.file_system.httpx.AsyncClient") as mock_client_cls:
+    with patch("ghost_agent.tools.file_system.curl_requests", None), \
+         patch("ghost_agent.tools.file_system.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client_cls.return_value.__aenter__.return_value = mock_client
         

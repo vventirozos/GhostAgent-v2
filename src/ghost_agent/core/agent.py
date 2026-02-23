@@ -125,7 +125,7 @@ class GhostAgent:
                 lower_content = content.lower()
                 if ("memory updated" in lower_content or "memory stored" in lower_content) and len(content) < 100:
                     continue
-                    
+                
             clean_history.append(msg)
             
         clean_history.reverse()
@@ -153,10 +153,6 @@ class GhostAgent:
         return system_msgs + final_history
 
     def _prune_context(self, messages: List[Dict[str, Any]], max_tokens: int = 8000) -> List[Dict[str, Any]]:
-        """
-        Proactively prunes messages to fit within context limits during the reasoning loop.
-        Prioritizes: System Prompt > Last User Message > Recent History
-        """
         current_tokens = sum(estimate_tokens(str(m.get("content", ""))) for m in messages)
         if current_tokens < max_tokens:
             return messages
@@ -164,25 +160,24 @@ class GhostAgent:
         pretty_log("Context Pruning", f"Reducing context from {current_tokens} to {max_tokens} tokens", icon=Icons.CUT)
         
         system_msgs = [m for m in messages if m.get("role") == "system"]
-        # Ensure we keep the last user message defining the current request
         last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
         
-        # Calculate base tokens (System + Last User)
         base_tokens = sum(estimate_tokens(str(m.get("content", ""))) for m in system_msgs)
         if last_user:
             base_tokens += estimate_tokens(str(last_user.get("content", "")))
             
-        remaining_budget = max_tokens - base_tokens - 500 # 500 buffer
+        remaining_budget = max_tokens - base_tokens - 500
         if remaining_budget < 0:
-            # Extreme case: System + User is too big. Just return System + Truncated User
-            if last_user:
-                return system_msgs + [last_user]
+            if last_user: return system_msgs + [last_user]
             return system_msgs
-
-        # Fill remaining budget with most recent messages (excluding system and last_user if already handled)
+            
         pruned_history = []
         for m in reversed(messages):
-            if m.get("role") == "system" or m == last_user:
+            if m.get("role") == "system": continue
+            
+            # If this is the last_user, we already reserved its budget. Add it instantly.
+            if m == last_user:
+                pruned_history.append(m)
                 continue
                 
             msg_tokens = estimate_tokens(str(m.get("content", "")))
@@ -192,11 +187,8 @@ class GhostAgent:
             else:
                 break
                 
-        final_msgs = system_msgs
+        final_msgs = list(system_msgs)
         final_msgs.extend(reversed(pruned_history))
-        if last_user and last_user not in final_msgs:
-            final_msgs.append(last_user)
-            
         return final_msgs
 
     async def run_smart_memory_task(self, interaction_context: str, model_name: str, selectivity: float):
@@ -327,16 +319,6 @@ class GhostAgent:
                 trivial_triggers = ["who are you", "hello", " hi ", "hey there", "how are you", "what's up", "name is"]
                 is_trivial = any(t in last_user_content.lower() for t in trivial_triggers)
                 
-                if is_trivial and not has_coding_intent:
-                    payload = {"model": model, "messages": messages, "stream": False, "temperature": 0.7}
-                    try:
-                        pretty_log("Fast Node Bypass", "Routing trivial chat to fast upstream...", icon=Icons.MODE_GHOST)
-                        fast_resp = await self.context.llm_client.chat_completion(payload, use_swarm=True)
-                        final_ai_content = fast_resp["choices"][0]["message"]["content"]
-                        
-                        return final_ai_content, int(datetime.datetime.now().timestamp()), req_id
-                    except Exception as e:
-                        pretty_log("Fast Node Failed", f"Bypass error: {e}, falling back to reasoning loop...", level="WARNING", icon=Icons.WARN)
                 
                 should_fetch_memory = (
                     not is_fact_check and 
@@ -389,7 +371,7 @@ class GhostAgent:
                                 "sandbox_dir": self.context.sandbox_dir, 
                                 "memory_system": self.context.memory_system
                             }
-                            sandbox_state = await asyncio.to_thread(lambda: asyncio.run(tool_list_files(**params)) if asyncio.iscoroutinefunction(tool_list_files) else tool_list_files(**params))
+                            sandbox_state = await tool_list_files(**params)
                             self.context.cached_sandbox_state = sandbox_state
                         else:
                             sandbox_state = self.context.cached_sandbox_state
@@ -403,13 +385,26 @@ class GhostAgent:
                         last_tool_output = self._prepare_planning_context(tools_run_this_turn[-2:])
                         recent_transcript = self._get_recent_transcript(messages)
                             
-                        available_tools_list = ", ".join([t["function"]["name"] for t in get_active_tool_definitions(self.context)])
+                        tool_hints = {
+                            "system_utility": "weather, time, health",
+                            "execute": "python, bash",
+                            "postgres_admin": "sql"
+                        }
+                        available_tools_list = ", ".join([
+                            f"{t['function']['name']} ({tool_hints.get(t['function']['name'], 'native tool')})"
+                            for t in get_active_tool_definitions(self.context)
+                        ])
+                        safe_scratch = str(scratch_data)
+                        if len(safe_scratch) > 1500: safe_scratch = safe_scratch[:1500] + "\n...[TRUNCATED]"
+                        safe_sandbox = str(sandbox_state)
+                        if len(safe_sandbox) > 1500: safe_sandbox = safe_sandbox[:1500] + "\n...[TRUNCATED]"
+
                         planning_prompt = f"""
 ### CURRENT SITUATION
 SCRAPBOOK:
-{scratch_data}
+{safe_scratch}
 SANDBOX STATE:
-{sandbox_state if has_coding_intent else 'N/A'}
+{safe_sandbox if has_coding_intent else 'N/A'}
 ### RECENT CONVERSATION:
 {recent_transcript}
 
@@ -443,6 +438,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                             thought_content = plan_json.get("thought", "No thought provided.")
                             tree_update = plan_json.get("tree_update", {})
                             next_action_id = plan_json.get("next_action_id", "")
+                            required_tool = plan_json.get("required_tool", "all")
                             
                             if tree_update:
                                 task_tree.load_from_json(tree_update)
@@ -463,7 +459,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                         except Exception as e:
                             logger.error(f"Planning step failed: {e}")
                             if not any("### ACTIVE STRATEGY" in m.get("content", "") for m in messages):
-                                messages.append({"role": "system", "content": "### ACTIVE STRATEGY: Proceed with the next logical step to fulfill the user request."})
+                                messages.append({"role": "user", "content": "### ACTIVE STRATEGY: Proceed directly to using a tool. Do NOT provide any conversational response this turn, only output a tool_calls array!"})
 
                     # Dynamic state no longer mutated via re.sub
 
@@ -493,19 +489,32 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                         else:
                             dynamic_state += "CRITICAL INSTRUCTION: Execute ONLY the tool required for the FOCUS TASK.\n"
 
-                    req_messages = list(messages)
-                    req_messages.append({"role": "system", "content": dynamic_state.strip()})
+                    req_messages = [m.copy() for m in messages]
+                    if req_messages and req_messages[0].get("role") == "system":
+                        req_messages[0]["content"] += f"\n\n{dynamic_state.strip()}"
+                    else:
+                        req_messages.insert(0, {"role": "system", "content": dynamic_state.strip()})
 
                     payload = {
                         "model": model, 
                         "messages": req_messages, 
                         "stream": False, 
-                        "tools": get_active_tool_definitions(self.context), 
-                        "tool_choice": "none" if force_final_response else "auto", 
                         "temperature": active_temp, 
-                        "frequency_penalty": 0.5,
                         "max_tokens": 8192
                     }
+                    
+                    target_tool = locals().get("required_tool", "all")
+                    
+                    # Dynamic Tool Pruning to accelerate KV-cache prefill
+                    if force_final_response or target_tool.lower() == "none":
+                        pass # Omit tools array entirely for pure text generation
+                    elif target_tool != "all":
+                        filtered_tools = [t for t in get_active_tool_definitions(self.context) if t["function"]["name"] == target_tool]
+                        payload["tools"] = filtered_tools if filtered_tools else get_active_tool_definitions(self.context)
+                        payload["tool_choice"] = "auto"
+                    else:
+                        payload["tools"] = get_active_tool_definitions(self.context)
+                        payload["tool_choice"] = "auto"
                     
                     pretty_log("LLM Request", f"Turn {turn+1} | Temp {active_temp:.2f}", icon=Icons.LLM_ASK)
                     
@@ -537,7 +546,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                                 recovery_msgs.append(last_tool)
                                 
                             messages = recovery_msgs
-                            messages.append({"role": "system", "content": "SYSTEM ALERT: The conversation history was truncated due to context limits. Focus ONLY on the immediate next step."})
+                            messages.append({"role": "user", "content": "SYSTEM ALERT: The conversation history was truncated to fit within context limits. Continue task. Assume previous context has been handled."})
                             
                             # RETRY ONCE with pruned context
                             try:
@@ -611,7 +620,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                             # Remove the recently added content to prevent duplicating text during the loop
                             if content:
                                 final_ai_content = final_ai_content[:-len(content)].strip()
-                            messages.append({"role": "system", "content": "CRITICAL: You have not fulfilled the learning/profile instructions in the user's request. You MUST call 'learn_skill' or 'update_profile' now before finishing."})
+                            messages.append({"role": "user", "content": "CRITICAL: You have not fulfilled the learning/profile instructions in the user's request. You MUST call 'learn_skill' or 'update_profile' now before finishing."})
                             continue
 
                         if self.context.args.smart_memory > 0.0 and last_user_content and not forget_was_called and not last_was_failure:
@@ -639,10 +648,10 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                                     forget_was_called = True
                             except: pass
 
-                        max_uses = 4 if fname in ["deep_research", "web_search"] else (20 if fname == "execute" else 10)
+                        max_uses = 10 if fname in ["deep_research", "web_search"] else (20 if fname == "execute" else 10)
                         if tool_usage[fname] > max_uses:
                             pretty_log("Loop Breaker", f"Halted overuse: {fname}", icon=Icons.STOP)
-                            messages.append({"role": "system", "content": f"SYSTEM ALERT: Tool '{fname}' used too many times. You MUST stop using this tool and proceed with the data you have, or inform the user of the failure."})
+                            messages.append({"role": "user", "content": f"SYSTEM ALERT: Tool '{fname}' used too many times in a row. It is now blocked. YOU MUST USE A DIFFERENT APPROACH OR STOP."})
                             force_stop = True; break
 
                         try:
@@ -699,7 +708,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                                     pretty_log("Red Team Intervention", "Code patched for safety/logic.", icon=Icons.SHIELD)
                                     t_args["content"] = revised_code
                                     tool["function"]["arguments"] = json.dumps(t_args)
-                                    messages.append({"role": "system", "content": f"RED TEAM INTERVENTION: Your code was auto-corrected before execution.\nCritique: {critique}\nExecuting patched version."})
+                                    messages.append({"role": "user", "content": f"RED TEAM INTERVENTION: Your code was auto-corrected before execution.\nCritique: {critique}\nExecuting patched version."})
                                 elif not is_approved:
                                     pretty_log("Red Team Block", f"{critique}", icon=Icons.SHIELD)
                                     err_msg = {"role": "tool", "tool_call_id": tool["id"], "name": fname, "content": f"RED TEAM BLOCK: {critique}. Rewrite the code."}
@@ -770,10 +779,10 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                                     pretty_log("Execution Fail", f"Strike {execution_failure_count}/3 -> {error_preview}", icon=Icons.FAIL)
                                     from ..tools.file_system import tool_list_files
                                     sandbox_state = await tool_list_files(self.context.sandbox_dir, self.context.memory_system)
-                                    messages.append({"role": "system", "content": f"AUTO-DIAGNOSTIC: The script failed. SANDBOX TREE:\n{sandbox_state}"})
+                                    messages.append({"role": "user", "content": f"AUTO-DIAGNOSTIC: The script failed with an unexpected error. Try a different approach or fix the bug. Execution details: {str_res}"})
                                     if execution_failure_count >= 3:
                                         pretty_log("Loop Breaker", "Forcing final response", icon=Icons.STOP)
-                                        messages.append({"role": "system", "content": "SYSTEM ALERT: You have failed 3 times in a row. The task cannot be completed. DO NOT use any tools. Explain the failure to the user clearly."})
+                                        messages.append({"role": "user", "content": "SYSTEM ALERT: You have failed 3 times in a row. The task cannot be completed. Provide a final response explaining the situation."})
                                         force_final_response = True
                                 else:
                                     execution_failure_count = 0
@@ -792,7 +801,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                                     pretty_log("Tool Warning", f"{fname} -> {error_preview}", icon=Icons.WARN)
                                     if execution_failure_count >= 3:
                                         pretty_log("Loop Breaker", "Too many sequential tool failures.", icon=Icons.STOP)
-                                        messages.append({"role": "system", "content": "SYSTEM ALERT: You have failed 3 times in a row. Stop trying this approach. Explain the failure to the user and await instructions."})
+                                        messages.append({"role": "user", "content": "SYSTEM ALERT: You have failed 3 times in a row. Stop trying this approach and try something completely different."})
                                         force_stop = True
                                     
                             elif fname in ["manage_tasks", "learn_skill", "update_profile"] and "SUCCESS" in str_res.upper():
@@ -809,7 +818,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                 if getattr(self.context.args, 'perfect_it', False) and tools_run_this_turn and heavy_tools_used and execution_failure_count == 0 and not last_was_failure and (not final_ai_content or len(final_ai_content) < 50):
                     pretty_log("Perfect It Protocol", "Generating proactive optimization...", icon=Icons.IDEA)
                     perfect_it_prompt = f"Task completed successfully. Final tool output:\n\n{tools_run_this_turn[-1]['content']}\n\n<system_directive>First, succinctly present the tool output/result to the user. Then, based on your Perfection Protocol, analyze the result and proactively suggest one concrete way to optimize, scale, secure, or automate this work further. RESPOND IN PLAIN TEXT ONLY. DO NOT USE TOOLS.</system_directive>"
-                    messages.append({"role": "system", "content": perfect_it_prompt})
+                    messages.append({"role": "user", "content": perfect_it_prompt})
                     
                     payload["messages"] = messages
                     

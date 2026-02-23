@@ -55,6 +55,25 @@ body {
 }
 
 /* Header */
+#face-title {
+    position: absolute;
+    top: 50%;
+    right: 32px;
+    transform: translateY(-50%);
+    font-family: var(--font-mono);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--accent-color);
+    text-transform: uppercase;
+    letter-spacing: 8px;
+    text-shadow: 0 0 10px rgba(0, 243, 255, 0.5), 0 0 20px rgba(0, 243, 255, 0.3);
+    opacity: 0.6;
+    pointer-events: none;
+    z-index: 5;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+}
+
 header {
     display: flex;
     justify-content: space-between;
@@ -182,9 +201,9 @@ main#chat-container:hover {
     color: #e0e0e0;
     /* Glassy/Dark Tech Look */
     background: rgba(10, 10, 15, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(139, 0, 0, 0.4);
     /* Subtle border */
-    border-right: 2px solid var(--accent-color);
+    border-right: 2px solid #8b0000;
     /* Tech accent */
     border-radius: 16px 4px 16px 16px;
     backdrop-filter: blur(12px);
@@ -199,8 +218,8 @@ main#chat-container:hover {
     color: #fff;
     /* Clean, Professional Look */
     background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-left: 2px solid var(--secondary-color);
+    border: 1px solid rgba(139, 0, 0, 0.4);
+    border-left: 2px solid #8b0000;
     /* Agent accent */
     border-radius: 4px 16px 16px 16px;
     backdrop-filter: blur(15px);
@@ -273,7 +292,7 @@ footer#input-area-wrapper {
     width: 100%;
     max-width: 750px;
     background: rgba(15, 15, 22, 0.6);
-    border: 1px solid var(--surface-border);
+    border: 1px solid rgba(139, 0, 0, 0.4);
     border-radius: 30px;
     padding: 10px 10px 10px 24px;
     backdrop-filter: blur(var(--blur-amt));
@@ -283,9 +302,9 @@ footer#input-area-wrapper {
 }
 
 #input-area:focus-within {
-    border-color: rgba(0, 243, 255, 0.4);
+    border-color: #8b0000;
     background: rgba(20, 20, 30, 0.7);
-    box-shadow: 0 15px 50px rgba(0, 0, 0, 0.7), 0 0 20px rgba(0, 243, 255, 0.1);
+    box-shadow: 0 15px 50px rgba(0, 0, 0, 0.7), 0 0 20px rgba(139, 0, 0, 0.4);
     transform: translateY(-2px);
 }
 
@@ -377,7 +396,8 @@ footer#input-area-wrapper {
 
 body.zen-mode #ui-layer #chat-container,
 body.zen-mode #ui-layer #input-area,
-body.zen-mode #status-indicator {
+body.zen-mode #status-indicator,
+body.zen-mode #face-title {
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.5s ease;
@@ -448,8 +468,8 @@ body.zen-mode #activity-container {
 #planner-monologue {
     font-family: var(--font-mono);
     font-size: 0.8rem;
-    color: #bd00ff;
-    text-shadow: 0 0 8px rgba(189, 0, 255, 0.6);
+    color: #ff0000;
+    text-shadow: 0 0 8px rgba(139, 0, 0, 0.8);
     max-width: 600px;
     line-height: 1.4;
     opacity: 0;

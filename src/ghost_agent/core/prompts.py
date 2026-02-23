@@ -89,6 +89,7 @@ Engage in scientific reasoning before altering the plan:
 5. USER OVERRIDE: If the user explicitly asks to use a tool for a task it cannot reliably perform (e.g., using 'recall' for exact string matching), OVERRIDE the user and plan to use the correct tool (e.g., 'file_system' search).
 6. STATIC ANALYSIS: If the user asks to explain, examine, describe, or review code/SQL, DO NOT plan to execute it. Your plan must be to answer directly using your own knowledge.
 7. TOOL BINDING: If a tool is required, explicitly state WHICH JSON tool should be used next. If no tool is needed (e.g., static analysis, answering a question), explicitly set "next_action_id" to "none".
+8. TOOL KNOWLEDGE: 'system_utility' is the tool for checking weather, time, and system health.
 
 ### OUTPUT FORMAT
 Return ONLY valid JSON. Keep your "thought" to a MAXIMUM of 2 short sentences.
@@ -103,7 +104,8 @@ CRITICAL: DO NOT copy the example below verbatim. Generate a plan specific to th
       {"id": "task_1", "description": "[Specific next tool action]", "status": "READY"}
     ]
   },
-  "next_action_id": "task_1"
+  "next_action_id": "task_1",
+  "required_tool": "[Exact name of the native JSON tool to use next, or 'none' if answering conceptually]"
 }
 """
 

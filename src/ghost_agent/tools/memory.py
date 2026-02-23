@@ -195,13 +195,8 @@ async def tool_unified_forget(target: str, sandbox_dir: Path, memory_system, pro
     # 2. Vector Memory Cleanup (Search then Destroy)
     try:
         # --- FUZZY FILENAME SWEEP ---
-        # Get all unique sources currently in the DB
-        data = await asyncio.to_thread(memory_system.collection.get, include=["metadatas"])
-        all_sources = set()
-        if data and "metadatas" in data:
-            for meta in data["metadatas"]:
-                if meta and "source" in meta:
-                    all_sources.add(meta["source"])
+        # Get all unique sources currently in the DB instantly via the index
+        all_sources = set(await asyncio.to_thread(memory_system.get_library))
         
         # Look for a fuzzy match in filenames
         target_stem = Path(target).stem.lower()

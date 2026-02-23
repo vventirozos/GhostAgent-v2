@@ -28,14 +28,14 @@ async def test_unified_forget_async_calls(mock_memory_system):
     with patch('asyncio.to_thread', new_callable=AsyncMock) as mock_to_thread:
         # Step 1: Mock the return values for the sequence of to_thread calls
         # We have:
-        # 1. memory_system.collection.get (fuzzy sweep) -> return empty dict or mocked
+        # 1. memory_system.get_library (fuzzy sweep) -> return list
         # 2. memory_system.collection.query (semantic sweep) -> return candidates
         # 3. memory_system.collection.delete (if candidate found)
         
         # Setup side effects for to_thread based on the callable passed
         async def side_effect(func, *args, **kwargs):
-            if func == mock_memory_system.collection.get:
-                return {'ids': [], 'metadatas': []}
+            if func == mock_memory_system.get_library:
+                return []
             if func == mock_memory_system.collection.query:
                 return {
                     'ids': [['mem_1']],
@@ -57,6 +57,7 @@ async def test_unified_forget_async_calls(mock_memory_system):
         # Check query call
         query_called = False
         delete_called = False
+
         
         for call in mock_to_thread.call_args_list:
             if call.args[0] == mock_memory_system.collection.query:

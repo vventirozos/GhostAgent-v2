@@ -30,6 +30,7 @@ async def test_check_health_basic(mock_context):
          patch("ghost_agent.tools.system.os.getloadavg", return_value=(0.5, 0.3, 0.1)), \
          patch("ghost_agent.tools.system.psutil") as mock_psutil, \
          patch("ghost_agent.tools.system.subprocess.run") as mock_run, \
+         patch("ghost_agent.tools.system.curl_requests", None), \
          patch("ghost_agent.tools.system.httpx.AsyncClient") as mock_client_cls:
 
         # Mock psutil
@@ -71,6 +72,7 @@ async def test_check_health_no_psutil(mock_context):
     with patch("ghost_agent.tools.system.psutil", None), \
          patch("ghost_agent.tools.system.shutil.disk_usage", return_value=(1000, 500, 500)), \
          patch("ghost_agent.tools.system.subprocess.run") as mock_run, \
+         patch("ghost_agent.tools.system.curl_requests", None), \
          patch("ghost_agent.tools.system.httpx.AsyncClient") as mock_client_cls:
 
         mock_run.return_value.returncode = 1 # Docker fail
@@ -91,6 +93,7 @@ async def test_check_health_network_failure(mock_context):
     """Test handling of network exceptions."""
     with patch("ghost_agent.tools.system.psutil"), \
          patch("ghost_agent.tools.system.subprocess.run"), \
+         patch("ghost_agent.tools.system.curl_requests", None), \
          patch("ghost_agent.tools.system.httpx.AsyncClient") as mock_client_cls:
 
         mock_client = AsyncMock()
@@ -109,6 +112,7 @@ async def test_check_health_with_tor(mock_context):
     
     with patch("ghost_agent.tools.system.psutil"), \
          patch("ghost_agent.tools.system.subprocess.run"), \
+         patch("ghost_agent.tools.system.curl_requests", None), \
          patch("ghost_agent.tools.system.httpx.AsyncClient") as mock_client_cls:
 
         mock_client = AsyncMock()

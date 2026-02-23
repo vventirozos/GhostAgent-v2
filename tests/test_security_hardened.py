@@ -123,9 +123,13 @@ def test_docker_sandbox_injects_proxy(mock_docker, mock_tor_proxy, mock_tor_prox
     assert not env_arg, f"Expected no environment variables for installing, got {env_arg}"
 
 # --- 4. System Tools Tests ---
+@patch("ghost_agent.tools.system.curl_requests", None)
+@patch("ghost_agent.tools.system.curl_requests", None)
+@patch("ghost_agent.tools.system.asyncio.sleep")
+@patch("ghost_agent.tools.system.request_new_tor_identity")
 @patch("ghost_agent.tools.system.httpx.AsyncClient")
 @pytest.mark.asyncio
-async def test_check_health_uses_proxy(mock_client_cls, mock_tor_proxy, mock_tor_proxy_h):
+async def test_check_health_uses_proxy(mock_client_cls, mock_tor_identity, mock_sleep, mock_tor_proxy, mock_tor_proxy_h):
     # Mock context object
     mock_context = MagicMock()
     mock_context.tor_proxy = mock_tor_proxy
@@ -135,7 +139,7 @@ async def test_check_health_uses_proxy(mock_client_cls, mock_tor_proxy, mock_tor
     
     # Setup AsyncContextManager mock
     mock_instance = AsyncMock()
-    mock_instance.get.return_value.status_code = 200
+    mock_instance.get.side_effect = Exception("Force fail to trigger retry")
     mock_client_cls.return_value.__aenter__.return_value = mock_instance
     
     await tool_check_health(context=mock_context)

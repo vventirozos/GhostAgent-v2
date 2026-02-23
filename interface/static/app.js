@@ -1,7 +1,6 @@
-import * as sphereFace from './sphere.js';
-import * as ferrofluidFace from './ferrofluid.js';
+import * as matrixGraphFace from './matrix_graph.js';
 
-let activeFace = sphereFace;
+let activeFace = matrixGraphFace;
 
 const chatLog = document.getElementById('chat-log');
 const chatInput = document.getElementById('chat-input');
@@ -106,7 +105,29 @@ function getIconColor(icon) {
     return '#bd00ff';
 }
 
-function updateActivityIcon(icon) { if (activityIcon) activityIcon.textContent = icon; }
+let iconHideTimeout;
+function updateActivityIcon(icon) {
+    if (activityIcon) {
+        activityIcon.textContent = icon;
+        activityIcon.style.opacity = '1';
+        clearTimeout(iconHideTimeout);
+
+        if (!isProcessingRequest) {
+            iconHideTimeout = setTimeout(() => {
+                if (!isProcessingRequest) {
+                    activityIcon.style.opacity = '0';
+                    setTimeout(() => {
+                        // Ensure we don't clear an icon that just faded back in
+                        if (activityIcon.style.opacity === '0') {
+                            activityIcon.textContent = '';
+                            activityIcon.style.opacity = '1';
+                        }
+                    }, 300);
+                }
+            }, 2000);
+        }
+    }
+}
 
 let workTimer;
 function updateStateFromIcon(icon) {
@@ -184,6 +205,8 @@ async function sendMessage() {
     activeFace.setWorkingState(true);
     activeFace.setWaitingState(true);
     if (activityIcon) {
+        clearTimeout(iconHideTimeout);
+        activityIcon.style.opacity = '1';
         activityIcon.textContent = '🧠';
         activityIcon.classList.add('working');
     }
@@ -220,8 +243,8 @@ async function sendMessage() {
         activeFace.setWorkingState(false);
         activeFace.setWaitingState(false);
         if (activityIcon) {
-            activityIcon.textContent = '✅';
             activityIcon.classList.remove('working');
+            updateActivityIcon('✅');
         }
         setTimeout(scrollToBottom, 100);
 
@@ -268,17 +291,3 @@ setTimeout(() => {
 
 activeFace.init();
 connectWebSocket();
-
-const faceToggleBtn = document.getElementById('face-toggle-btn');
-if (faceToggleBtn) {
-    faceToggleBtn.addEventListener('click', () => {
-        if (activeFace.destroy) {
-            activeFace.destroy();
-        }
-        activeFace = activeFace === sphereFace ? ferrofluidFace : sphereFace;
-        // Make sure previous container contents are cleaned up
-        const container = document.getElementById('sphere-container');
-        if (container) container.innerHTML = '';
-        activeFace.init();
-    });
-}

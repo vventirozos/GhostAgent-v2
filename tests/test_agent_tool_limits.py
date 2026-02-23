@@ -29,13 +29,13 @@ def agent():
 async def test_tool_limits_search(agent):
     agent.context.args.use_planning = False
     
-    # We want the agent to call deep_research 5 times.
-    # The max is 4. So on the 5th attempt, it should be blocked and forced to stop.
+    # We want the agent to call deep_research 11 times.
+    # The max is 10. So on the 11th attempt, it should be blocked and forced to stop.
     
     tool_call_msg = {"choices": [{"message": {"content": None, "tool_calls": [{"id": "t1", "function": {"name": "deep_research", "arguments": "{}"}}]}}]}
     # In case it tries to answer after being told to stop
     final_msg = {"choices": [{"message": {"content": "Final Answer", "tool_calls": []}}]}
-    side_effects = [copy.deepcopy(tool_call_msg) for _ in range(5)] + [final_msg]
+    side_effects = [copy.deepcopy(tool_call_msg) for _ in range(12)] + [final_msg]
     
     agent.context.llm_client.chat_completion = AsyncMock(side_effect=side_effects)
     
@@ -48,13 +48,10 @@ async def test_tool_limits_search(agent):
         
         # Determine how many times chat_completion was actually called
         # Call 1 -> tool call 1 -> tool executed
-        # Call 2 -> tool call 2 -> tool executed
-        # Call 3 -> tool call 3 -> tool executed
-        # Call 4 -> tool call 4 -> tool executed
-        # Call 5 -> tool call 5 -> Loop Breaker tripped! force_stop = True and breaks out
-        # Actually it breaks OUT of the loop, so chat_completion might be called 5 times.
+        # ...
+        # Call 11 -> tool call 11 -> Loop Breaker tripped! force_stop = True and breaks out
         
-        assert agent.context.llm_client.chat_completion.call_count == 6
+        assert agent.context.llm_client.chat_completion.call_count == 12
         
         # Check that the Loop Breaker log was triggered for deep_research
         log_msgs = [str(call) for call in mock_log.call_args_list]

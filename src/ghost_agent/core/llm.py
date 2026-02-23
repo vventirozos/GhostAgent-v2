@@ -149,43 +149,46 @@ class LLMClient:
         """
         Sends a chat completion request to the upstream LLM with robust retry logic.
         """
-        if use_vision and getattr(self, 'vision_clients', None):
-            target_model = payload.get("model")
-            tried_nodes = []
-            
-            node = self.get_vision_node(target_model)
-            
-            if node:
-                for _ in range(len(self.vision_clients)):
-                    if not node:
-                        break
+        if use_vision:
+            if getattr(self, 'vision_clients', None):
+                target_model = payload.get("model")
+                tried_nodes = []
+                
+                node = self.get_vision_node(target_model)
+                
+                if node:
+                    for _ in range(len(self.vision_clients)):
+                        if not node:
+                            break
+                            
+                        if node in tried_nodes:
+                            target_model = None
+                            node = self.get_vision_node(target_model)
+                            
+                        loop_breaker = 0
+                        while node in tried_nodes and loop_breaker < len(self.vision_clients):
+                            node = self.get_vision_node(None)
+                            loop_breaker += 1
+                            
+                        tried_nodes.append(node)
                         
-                    if node in tried_nodes:
-                        target_model = None
-                        node = self.get_vision_node(target_model)
+                        pretty_log("Vision Compute", f"Routing request to Vision Node ({node['model']})", level="INFO", icon=Icons.TOOL_DEEP)
+                        try:
+                            node_payload = payload.copy()
+                            node_payload["model"] = node["model"]
+                            
+                            resp = await node["client"].post("/v1/chat/completions", json=node_payload)
+                            resp.raise_for_status()
+                            return resp.json()
+                        except Exception as e:
+                            pretty_log(f"Vision node ({node['model']}) failed: {type(e).__name__}, trying next...", level="WARNING", icon=Icons.WARN)
+                            target_model = None
+                            node = self.get_vision_node(target_model)
+                            continue
                         
-                    loop_breaker = 0
-                    while node in tried_nodes and loop_breaker < len(self.vision_clients):
-                        node = self.get_vision_node(None)
-                        loop_breaker += 1
-                        
-                    tried_nodes.append(node)
-                    
-                    pretty_log("Vision Compute", f"Routing request to Vision Node ({node['model']})", level="INFO", icon=Icons.TOOL_DEEP)
-                    try:
-                        node_payload = payload.copy()
-                        node_payload["model"] = node["model"]
-                        
-                        resp = await node["client"].post("/v1/chat/completions", json=node_payload)
-                        resp.raise_for_status()
-                        return resp.json()
-                    except Exception as e:
-                        pretty_log(f"Vision node ({node['model']}) failed: {type(e).__name__}, trying next...", level="WARNING", icon=Icons.WARN)
-                        target_model = None
-                        node = self.get_vision_node(target_model)
-                        continue
-                    
-                pretty_log("Vision Compute Failed", "All vision nodes failed, falling back to main upstream", level="WARNING", icon=Icons.WARN)
+                pretty_log("Vision Compute Failed", "All vision nodes failed.", level="ERROR", icon=Icons.WARN)
+                
+            raise Exception("Vision analysis failed: The dedicated vision node is offline or returned an error, and the main upstream model does not support image inputs.")
 
         if use_worker and getattr(self, 'worker_clients', None):
             target_model = payload.get("model")

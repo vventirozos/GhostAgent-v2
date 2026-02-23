@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from transformers import AutoTokenizer
+from functools import lru_cache
 
 GRANITE_MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 TOKEN_ENCODER = None
@@ -12,38 +13,57 @@ def load_tokenizer(local_tokenizer_path: Path):
     global TOKEN_ENCODER
     # 1. Try Local Disk (Offline Mode) - PREFERRED
     if local_tokenizer_path.exists() and (local_tokenizer_path / "tokenizer.json").exists():
+        os.environ["HF_HUB_OFFLINE"] = "1"
         try:
             print(f"📂 Loading Tokenizer from local cache: {local_tokenizer_path}")
             TOKEN_ENCODER = AutoTokenizer.from_pretrained(str(local_tokenizer_path), local_files_only=True)
+            os.environ.pop("HF_HUB_OFFLINE", None)
             return TOKEN_ENCODER
         except Exception as e:
+            os.environ.pop("HF_HUB_OFFLINE", None)
             print(f"⚠️ Local tokenizer corrupted: {e}")
 
-    # 2. Try Network Download (Tor Mode) - FALLBACK
-    print(f"⏳ Local missing. Downloading {GRANITE_MODEL_ID} via Tor...")
+    # 2. Try Network Download (Direct Mode) - FALLBACK
+    print(f"⏳ Local missing. Downloading {GRANITE_MODEL_ID} via Direct Network...")
     
-    # Force Remote DNS (socks5h) to prevent leaks and 'Host not found' errors
-    tor_proxy = os.getenv("TOR_PROXY", "socks5h://127.0.0.1:9050")
-    if tor_proxy.startswith("socks5://"):
-        tor_proxy = tor_proxy.replace("socks5://", "socks5h://")
-        
+    import threading
+    import queue
+
+    def _download_hf_tokenizer(q):
+        import huggingface_hub
+        original_timeout = getattr(huggingface_hub.constants, "HF_HUB_DOWNLOAD_TIMEOUT", 10)
+        huggingface_hub.constants.HF_HUB_DOWNLOAD_TIMEOUT = 10
+        try:
+            enc = AutoTokenizer.from_pretrained(GRANITE_MODEL_ID)
+            huggingface_hub.constants.HF_HUB_DOWNLOAD_TIMEOUT = original_timeout
+            q.put(("SUCCESS", enc))
+        except Exception as err:
+            huggingface_hub.constants.HF_HUB_DOWNLOAD_TIMEOUT = original_timeout
+            q.put(("ERROR", err))
+
+    q = queue.Queue()
+    t = threading.Thread(target=_download_hf_tokenizer, args=(q,), daemon=True)
+    t.start()
+    
     try:
-        # We pass proxies explicitly to override any confusing environment vars
-        TOKEN_ENCODER = AutoTokenizer.from_pretrained(
-            GRANITE_MODEL_ID,
-            proxies={"http": tor_proxy, "https": tor_proxy}
-        )
-        
+        status, result = q.get(timeout=15.0)
+        if status == "SUCCESS":
+            TOKEN_ENCODER = result
+        else:
+            print(f"❌ Network download failed (Thread Error): {result}")
+            return None
+            
         # Save it immediately so we never have to download again
         print(f"💾 Caching tokenizer to {local_tokenizer_path}...")
         local_tokenizer_path.mkdir(parents=True, exist_ok=True)
         TOKEN_ENCODER.save_pretrained(str(local_tokenizer_path))
         return TOKEN_ENCODER
         
-    except Exception as e:
-        print(f"❌ Network download failed: {e}")
+    except queue.Empty:
+        print(f"❌ Network download failed: Hard 15s Timeout Reached. HuggingFace might be blocked (daemon dropped).")
         return None
 
+@lru_cache(maxsize=2048)
 def estimate_tokens(text: str) -> int:
     """
     Accurately estimates tokens using the Granite tokenizer.

@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 import httpx
+try:
+    from curl_cffi import requests as curl_requests
+except ImportError:
+    curl_requests = None
 from ..utils.logging import Icons, pretty_log
+from ..utils.helpers import request_new_tor_identity
 
 def _get_safe_path(sandbox_dir: Path, filename: str) -> Path:
     """
@@ -95,28 +100,67 @@ async def tool_download_file(url: str, sandbox_dir: Path, tor_proxy: str, filena
         proxy_url = proxy_url.replace("socks5://", "socks5h://")
 
     headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        async with httpx.AsyncClient(proxy=proxy_url, headers=headers, follow_redirects=True, timeout=60.0) as client:
-            async with client.stream("GET", url) as resp:
-                if resp.status_code != 200: return f"Error {resp.status_code} - Failed to download from {url}"
-                
-                clength = resp.headers.get("Content-Length")
-                if clength and int(clength) > 50000000:
-                    return f"Error: File is too large ({int(clength)/1000000:.1f}MB). Download limit is 50MB."
-
-                # Use safe path
+    last_error = None
+    for attempt in range(3):
+        try:
+            if curl_requests:
+                proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
                 try:
                     target_path = _get_safe_path(sandbox_dir, filename)
                 except ValueError as ve: return str(ve)
-
-                target_path.parent.mkdir(parents=True, exist_ok=True)
                 
-                with open(target_path, "wb") as f:
-                    async for chunk in resp.aiter_bytes():
-                        await asyncio.to_thread(f.write, chunk)
+                async with curl_requests.AsyncSession(impersonate="chrome110", proxies=proxies, timeout=60.0, verify=False) as client:
+                    resp = await client.get(url, stream=True)
+                    if resp.status_code != 200:
+                        if resp.status_code in [401, 403, 503] and mode == "TOR":
+                            await asyncio.to_thread(request_new_tor_identity)
+                            await asyncio.sleep(5)
+                            continue
+                        return f"Error {resp.status_code} - Failed to download from {url}"
+                    
+                    clength = resp.headers.get("Content-Length")
+                    if clength and int(clength) > 50000000:
+                        return f"Error: File is too large ({int(clength)/1000000:.1f}MB). Download limit is 50MB."
+                    
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(target_path, "wb") as f:
+                        async for chunk in resp.aiter_content():
+                            if chunk:
+                                await asyncio.to_thread(f.write, chunk)
+                    return f"SUCCESS: Downloaded '{url}' to '{filename}'."
+            else:
+                async with httpx.AsyncClient(proxy=proxy_url, headers=headers, follow_redirects=True, timeout=60.0, verify=False) as client:
+                    async with client.stream("GET", url) as resp:
+                        if resp.status_code != 200:
+                            if resp.status_code in [401, 403, 503] and mode == "TOR":
+                                await asyncio.to_thread(request_new_tor_identity)
+                                await asyncio.sleep(5)
+                                continue
+                            return f"Error {resp.status_code} - Failed to download from {url}"
                         
-        return f"SUCCESS: Downloaded '{url}' to '{filename}'."
-    except Exception as e: return f"Error: {e}"
+                        clength = resp.headers.get("Content-Length")
+                        if clength and int(clength) > 50000000:
+                            return f"Error: File is too large ({int(clength)/1000000:.1f}MB). Download limit is 50MB."
+
+                        try:
+                            target_path = _get_safe_path(sandbox_dir, filename)
+                        except ValueError as ve: return str(ve)
+
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        
+                        with open(target_path, "wb") as f:
+                            async for chunk in resp.aiter_bytes():
+                                await asyncio.to_thread(f.write, chunk)
+                                
+                    return f"SUCCESS: Downloaded '{url}' to '{filename}'."
+        except Exception as e:
+            last_error = e
+            if mode == "TOR":
+                await asyncio.to_thread(request_new_tor_identity)
+                await asyncio.sleep(5)
+                continue
+            
+    return f"Error: Failed after 3 attempts. Last error: {last_error}"
 
 async def tool_file_search(pattern: str, sandbox_dir: Path, filename: str = None):
     # 1. Safety check for None

@@ -1,30 +1,51 @@
+import sys
+print("🐍 Python runtime initialized. Loading heavy AI libraries (Transformers, ChromaDB)...", flush=True)
+
+import os
+# Prevent ChromaDB/Posthog from hanging the import process via tracking calls
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["POSTHOG_DISABLED"] = "1"
+os.environ["TELEMETRY_IMPL"] = "none"
+os.environ["CHROMA_TELEMETRY_IMPL"] = "none"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+# Disable automatic version checking
+os.environ["DISABLE_VERSION_CHECK"] = "1"
+
+print(" - Importing standard libraries...", flush=True)
 import argparse
 import asyncio
 import datetime
 import importlib.util
-import os
 import sys
 import json
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+print(" - Importing server dependencies (uvicorn, apscheduler)...", flush=True)
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
+print(" - Importing ghost_agent modules (api, core, llm)...", flush=True)
 from .api.app import create_app
 from .core.agent import GhostAgent, GhostContext
 from .core.llm import LLMClient
+
+print(" - Importing memory modules (vector, profile, skills)...", flush=True)
 from .memory.vector import VectorMemory
 from .memory.profile import ProfileMemory
 from .memory.scratchpad import Scratchpad
 from .memory.skills import SkillMemory
+
+print(" - Importing utilities and tools...", flush=True)
 from .sandbox.docker import DockerSandbox
 from .utils.logging import setup_logging, pretty_log, Icons
 from .utils.token_counter import load_tokenizer
 from .tools import tasks
 from .tools.registry import TOOL_DEFINITIONS
+
+print(" - All modules imported successfully!", flush=True)
 
 logger = logging.getLogger("GhostAgent")
 
@@ -143,6 +164,7 @@ async def lifespan(app):
 
     if not args.no_memory:
         try:
+            pretty_log("Memory System", "Initializing Vector Database and Sentence Transformers...", icon=Icons.MEM_READ)
             context.memory_system = VectorMemory(context.memory_dir, args.upstream_url, context.tor_proxy)
             if context.memory_system.collection:
                 count = context.memory_system.collection.count()

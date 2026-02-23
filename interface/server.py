@@ -3,6 +3,8 @@ import re
 import json
 import logging
 import signal
+import argparse
+import sys
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, Request, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -10,6 +12,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uvicorn
+
+# Parse arguments
+parser = argparse.ArgumentParser(description="Ghost Interface Server")
+parser.add_argument("--agent-log", default="/Users/vasilis/AI/Logs/ghost-agent.log", help="Path to the agent log file")
+args, unknown = parser.parse_known_args()
+AGENT_LOG_PATH = args.agent_log
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,14 +42,14 @@ app.add_middleware(
 connected_websockets = set()
 
 async def log_streamer():
-    """Reads journalctl logs and broadcasts them to connected clients."""
+    """Reads agent logs and broadcasts them to connected clients."""
     process = await asyncio.create_subprocess_exec(
-        "journalctl", "-u", "ghost-agent.service", "-f", "-o", "cat",
+        "tail", "-n", "10", "-F", AGENT_LOG_PATH,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
 
-    logger.info("Started journalctl log streamer")
+    logger.info(f"Started log streamer for {AGENT_LOG_PATH}")
 
     try:
         while True:
