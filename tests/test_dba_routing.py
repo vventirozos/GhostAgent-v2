@@ -44,15 +44,21 @@ async def test_dba_persona_activation(mock_context):
     
     await agent.handle_chat(body, background_tasks)
     
-    # Check the system prompt sent to the LLM
+    # Check the system prompt and transient injection sent to the LLM
     call_args = mock_context.llm_client.chat_completion.call_args
     assert call_args is not None
     payload = call_args[0][0]
     messages = payload["messages"]
     
-    system_msg = next(m for m in messages if m["role"] == "system")
-    assert "Ghost Principal PostgreSQL Administrator" in system_msg["content"]
-    assert "DBA ENGINEERING STANDARDS" in system_msg["content"]
+    # Base system prompt at index 0
+    assert messages[0]["role"] == "system"
+    assert "You are Ghost" in messages[0]["content"]
+    
+    # Specialized persona should be in the LAST message (trailing system injection)
+    last_msg = messages[-1]
+    assert last_msg["role"] == "system"
+    assert "Ghost Principal PostgreSQL Administrator" in last_msg["content"]
+    assert "DBA ENGINEERING STANDARDS" in last_msg["content"]
 
 @pytest.mark.asyncio
 async def test_python_persona_activation(mock_context):
@@ -73,9 +79,11 @@ async def test_python_persona_activation(mock_context):
     payload = call_args[0][0]
     messages = payload["messages"]
     
-    system_msg = next(m for m in messages if m["role"] == "system")
-    assert "Ghost Advanced Engineering Subsystem" in system_msg["content"]
-    assert "Ghost Principal PostgreSQL Administrator" not in system_msg["content"]
+    # Specialized persona should be in the LAST message (trailing system injection)
+    last_msg = messages[-1]
+    assert last_msg["role"] == "system"
+    assert "Ghost Advanced Engineering Subsystem" in last_msg["content"]
+    assert "Ghost Principal PostgreSQL Administrator" not in last_msg["content"]
 
 @pytest.mark.asyncio
 async def test_default_persona_activation(mock_context):
@@ -96,7 +104,13 @@ async def test_default_persona_activation(mock_context):
     payload = call_args[0][0]
     messages = payload["messages"]
     
-    system_msg = next(m for m in messages if m["role"] == "system")
-    assert "You are Ghost, an autonomous, Artificial Intelligence matrix" in system_msg["content"]
-    assert "Ghost Principal PostgreSQL Administrator" not in system_msg["content"]
-    assert "Ghost Advanced Engineering Subsystem" not in system_msg["content"]
+    # Base system prompt at index 0
+    assert messages[0]["role"] == "system"
+    assert "You are Ghost" in messages[0]["content"]
+    
+    # Last message should still be the transient system injection, but without specialized persona
+    last_msg = messages[-1]
+    assert last_msg["role"] == "system"
+    assert "Ghost Principal PostgreSQL Administrator" not in last_msg["content"]
+    assert "Ghost Advanced Engineering Subsystem" not in last_msg["content"]
+    assert "### DYNAMIC SYSTEM STATE" in last_msg["content"]

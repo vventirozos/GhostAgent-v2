@@ -16,6 +16,7 @@ def mock_agent():
     context.args.safety_checks = False
     context.args.max_context = 8000
     context.args.smart_memory = 0.0 # Disable background tasks
+    context.args.use_planning = True
     
     # Mock system components
     context.model_limits = {"test-model": 10000}
@@ -130,7 +131,7 @@ async def test_malformed_json_recovery_partial(mock_agent):
         {"choices": [{"message": {"content": "Final Answer"}}]} 
     ]
     
-    await mock_agent.handle_chat({"messages": [{"role": "user", "content": "Code"}]}, [])
+    await mock_agent.handle_chat({"messages": [{"role": "user", "content": "Write a python script"}]}, [])
     
     # Check fallback again
     calls = mock_agent.context.llm_client.chat_completion.call_args_list

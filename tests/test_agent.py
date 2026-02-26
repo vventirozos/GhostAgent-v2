@@ -36,7 +36,7 @@ def test_prepare_planning_context_truncation(mock_agent):
     assert "A" * 4000 in result
     assert result.endswith(expected_marker)
 
-def test_process_rolling_window_deduplication(mock_agent):
+def test_process_rolling_window_sliding(mock_agent):
     messages = [
         {"role": "user", "content": "Hi"},
         {"role": "tool", "name": "exec", "content": "Result A"},
@@ -45,20 +45,20 @@ def test_process_rolling_window_deduplication(mock_agent):
         {"role": "assistant", "content": "Real response"}
     ]
     
-    # Note: The method iterates BACKWARDS and keeps the NEWEST unique tool output.
-    # And it filters specific assistant phrases.
-    
+    # The new logic is a pure sliding window. No deduplication, no filtering.
     clean = mock_agent.process_rolling_window(messages, max_tokens=1000)
     
-    # Check deduplication
-    tool_msgs = [m for m in clean if m["role"] == "tool"]
-    assert len(tool_msgs) == 1
-    assert tool_msgs[0]["content"] == "Result A"
+    # Check that all messages are preserved (they all fit in 1000 tokens)
+    assert len(clean) == 5
     
-    # Check meta-chatter filtering
+    tool_msgs = [m for m in clean if m["role"] == "tool"]
+    assert len(tool_msgs) == 2
+    assert tool_msgs[0]["content"] == "Result A"
+    assert tool_msgs[1]["content"] == "Result A"
+    
     assist_msgs = [m for m in clean if m["role"] == "assistant"]
-    assert len(assist_msgs) == 1
-    assert assist_msgs[0]["content"] == "Real response"
+    assert len(assist_msgs) == 2
+    assert assist_msgs[1]["content"] == "Real response"
 
 def test_agent_semaphore_initialization(mock_agent):
     """
@@ -71,3 +71,63 @@ def test_agent_semaphore_initialization(mock_agent):
     # checking internal _value is implementation specific but simplest for unit test.
     assert mock_agent.agent_semaphore._value == 10
 
+@pytest.mark.asyncio
+async def test_agent_streaming(mock_agent):
+    import json
+    # Mock planning so that target_tool="none" causing it to enter the final streaming step
+    async def mock_plan(*args, **kwargs):
+        return {
+            "choices": [{"message": {"content": json.dumps({
+                "thought": "Thinking",
+                "next_action_id": "none",
+                "required_tool": "none"
+            })}}]
+        }
+    mock_agent.context.llm_client.chat_completion = MagicMock(side_effect=mock_plan)
+
+    # Mock the new stream_chat_completion
+    async def fake_stream(*args, **kwargs):
+        yield b"data: {\"choices\": [{\"delta\": {\"content\": \"hello\"}}]}\n\n"
+        yield b"data: [DONE]\n\n"
+
+    mock_agent.context.llm_client.stream_chat_completion = MagicMock(return_value=fake_stream())
+    
+    # Mock context config
+    mock_agent.context.args = MagicMock()
+    mock_agent.context.args.use_planning = True
+    mock_agent.context.args.smart_memory = 0.0
+    mock_agent.context.args.max_context = 4000
+    mock_agent.context.args.temperature = 0.5
+    mock_agent.context.scratchpad = MagicMock()
+    mock_agent.context.scratchpad.list_all.return_value = ""
+    mock_agent.context.profile_memory = MagicMock()
+    mock_agent.context.memory_system = None
+    mock_agent.context.skill_memory = None
+
+
+    # Disable profile lookup blocking
+    import asyncio
+    def sync_return(): return ""
+    mock_agent.context.profile_memory.get_context_string.return_value = sync_return()
+
+    body = {
+        "messages": [{"role": "user", "content": "calculate math"}],
+        "model": "test-model",
+        "stream": True
+    }
+    
+    bg_tasks = MagicMock()
+    
+    result_content, created_time, req_id = await mock_agent.handle_chat(body, bg_tasks)
+    
+    # Verify we get an async generator wrapper back
+    assert hasattr(result_content, '__aiter__')
+    
+    # Verify the yielded content
+    chunks = []
+    async for chunk in result_content:
+        chunks.append(chunk)
+        
+    assert len(chunks) == 2
+    assert chunks[0] == b"data: {\"choices\": [{\"delta\": {\"content\": \"hello\"}}]}\n\n"
+    assert chunks[1] == b"data: [DONE]\n\n"

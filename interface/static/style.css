@@ -148,7 +148,6 @@ main#chat-container {
     -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 100%);
     display: flex;
     flex-direction: column;
-    justify-content: flex-end;
     margin-bottom: 10px;
     max-height: 55vh;
     margin-top: auto;
@@ -166,13 +165,17 @@ main#chat-container:hover {
     padding: 0 32px 32px 32px;
     display: flex;
     flex-direction: column;
-    justify-content: flex-end;
     gap: 24px;
     pointer-events: auto;
     scroll-behavior: smooth;
+    min-height: 0;
 }
 
 /* Prettier, Professional Message Windows */
+.message:first-child {
+    margin-top: auto;
+}
+
 .message {
     max-width: 85%;
     padding: 18px 24px;
@@ -371,15 +374,15 @@ footer#input-area-wrapper {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: rgba(0, 243, 255, 0.3);
+    background: rgba(139, 0, 0, 0.6);
     border-radius: 5px;
-    border: 1px solid rgba(0, 243, 255, 0.1);
+    border: 1px solid rgba(139, 0, 0, 0.3);
     transition: background 0.3s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: var(--accent-color);
-    box-shadow: 0 0 10px var(--accent-color);
+    background: #8b0000;
+    box-shadow: 0 0 10px #8b0000;
 }
 
 @keyframes slideIn {

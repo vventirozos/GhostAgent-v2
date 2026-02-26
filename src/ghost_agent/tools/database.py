@@ -3,7 +3,7 @@ from typing import Optional
 from ..utils.logging import Icons, pretty_log
 from ..utils.sanitizer import extract_code_from_markdown
 
-async def tool_postgres_admin(action: str, connection_string: str, query: Optional[str] = None, table_name: Optional[str] = None, **kwargs):
+async def tool_postgres_admin(action: str, connection_string: Optional[str] = None, query: Optional[str] = None, table_name: Optional[str] = None, default_uri: Optional[str] = None, **kwargs):
     pretty_log("Postgres Admin", f"Action: {action}", icon=Icons.POSTGRES)
     try:
         import psycopg2
@@ -12,9 +12,10 @@ async def tool_postgres_admin(action: str, connection_string: str, query: Option
     except ImportError:
         return "Error: psycopg2 or tabulate library is missing."
 
+    connection_string = connection_string or default_uri
     if not connection_string:
-        return "Error: connection_string is required. Ask the user for the DB URI."
-
+        return "Error: connection_string is required and no default is configured. Ask the user for the DB URI."
+    
     if query:
         query = extract_code_from_markdown(query)
 

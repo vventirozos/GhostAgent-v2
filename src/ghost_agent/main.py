@@ -89,6 +89,7 @@ def parse_args():
     parser.add_argument("--swarm-nodes", default=None, help="Comma-separated list of url|model nodes")
     parser.add_argument("--worker-nodes", default=None, help="Comma-separated list of url|model nodes for background/edge tasks")
     parser.add_argument("--visual-nodes", default=None, help="Comma-separated list of url|model nodes for vision models")
+    parser.add_argument("--coding-nodes", default=None, help="Comma-separated list of url|model nodes for code generation")
     parser.add_argument("--model", default=os.getenv("GHOST_MODEL", "Qwen3-8B-Instruct-2507"))
     parser.add_argument("--temperature", "-t", type=float, default=0.7)
     parser.add_argument("--daemon", "-d", action="store_true")
@@ -97,6 +98,7 @@ def parse_args():
     parser.add_argument("--no-memory", action="store_true")
     parser.add_argument("--max-context", type=int, default=65536)
     parser.add_argument("--api-key", default=os.getenv("GHOST_API_KEY", "ghost-secret-123"))
+    parser.add_argument("--default-db", default=os.getenv("GHOST_DEFAULT_DB", "postgresql://ghost@127.0.0.1:5432/agent"), help="Default PostgreSQL URI for the DBA agent")
     parser.add_argument("--smart-memory", type=float, default=0.0)
     parser.add_argument("--anonymous", action="store_true", default=True, help="Always use anonymous search (Tor + DuckDuckGo)")
     parser.add_argument("--perfect-it", action="store_true", help="Enable proactive optimization suggestions after successful heavy tasks")
@@ -132,6 +134,16 @@ def parse_args():
                 visual_nodes_list.append({"url": url, "model": model})
     args.visual_nodes_parsed = visual_nodes_list
 
+    coding_nodes_list = []
+    if args.coding_nodes:
+        for node_str in args.coding_nodes.split(","):
+            parts = node_str.split("|")
+            url = parts[0].strip().replace("http:://", "http://").replace("https:://", "https://")
+            model = parts[1].strip() if len(parts) > 1 else "default"
+            if url:
+                coding_nodes_list.append({"url": url, "model": model})
+    args.coding_nodes_parsed = coding_nodes_list
+
     if args.upstream_url:
         args.upstream_url = args.upstream_url.replace("http:://", "http://").replace("https:://", "https://")
     return args
@@ -146,7 +158,7 @@ async def lifespan(app):
     GLOBAL_CONTEXT = context
 
     
-    context.llm_client = LLMClient(args.upstream_url, context.tor_proxy, args.swarm_nodes_parsed, args.worker_nodes_parsed, getattr(args, 'visual_nodes_parsed', None))
+    context.llm_client = LLMClient(args.upstream_url, context.tor_proxy, args.swarm_nodes_parsed, args.worker_nodes_parsed, getattr(args, 'visual_nodes_parsed', None), getattr(args, 'coding_nodes_parsed', None))
     
     pretty_log("System Boot", "Initializing components", icon=Icons.SYSTEM_BOOT)
 

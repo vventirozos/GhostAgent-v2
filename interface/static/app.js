@@ -113,6 +113,7 @@ function updateActivityIcon(icon) {
         clearTimeout(iconHideTimeout);
 
         if (!isProcessingRequest) {
+            let timeoutDuration = WORKING_ICONS.has(icon) ? 60000 : 2000;
             iconHideTimeout = setTimeout(() => {
                 if (!isProcessingRequest) {
                     activityIcon.style.opacity = '0';
@@ -124,7 +125,7 @@ function updateActivityIcon(icon) {
                         }
                     }, 300);
                 }
-            }, 2000);
+            }, timeoutDuration);
         }
     }
 }
@@ -135,17 +136,21 @@ function updateStateFromIcon(icon) {
 
     if (WORKING_ICONS.has(icon)) {
         activeFace.setWorkingState(true);
+        activeFace.setWaitingState(true);
         if (activityIcon) activityIcon.classList.add('working');
         clearTimeout(workTimer);
         workTimer = setTimeout(() => {
             if (!isProcessingRequest) {
                 activeFace.setWorkingState(false);
+                activeFace.setWaitingState(false);
                 if (activityIcon) activityIcon.classList.remove('working');
             }
-        }, 2000);
+        }, 60000);
     } else if (IDLE_ICONS.has(icon)) {
         activeFace.setWorkingState(false);
+        activeFace.setWaitingState(false);
         if (activityIcon) activityIcon.classList.remove('working');
+        clearTimeout(workTimer);
     }
 }
 
@@ -213,32 +218,109 @@ async function sendMessage() {
 
     try {
         chatHistory.push({ role: "user", content: text });
-        const payload = { model: "Qwen3-8B-Instruct-2507", messages: chatHistory };
+        const payload = { model: "Qwen3-8B-Instruct-2507", messages: chatHistory, stream: true };
+
+        // Inject an empty message div for the agent's upcoming response
+        const agentMessageDiv = addMessage('agent', 'Thinking.');
+        let accumulatedContent = "";
+
+        // Add animated thinking dots
+        let dotCount = 1;
+        const thinkingInterval = setInterval(() => {
+            dotCount = (dotCount % 3) + 1;
+            agentMessageDiv.textContent = 'Thinking' + '.'.repeat(dotCount);
+        }, 400);
+
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        const data = await response.json();
 
-        if (data.error && data.error !== "") {
-            addMessage('system', `Error: ${data.error}`);
-            activeFace.triggerSpike();
-        } else {
-            let content = "No response";
-            if (data.choices && data.choices[0] && data.choices[0].message) content = data.choices[0].message.content;
-            else if (data.message && data.message.content) content = data.message.content;
-            else if (data.response) content = data.response;
-            else if (data.content) content = data.content;
-            else content = JSON.stringify(data);
-            addMessage('agent', content);
-            chatHistory.push({ role: "assistant", content: content });
+        if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || `HTTP ${response.status}`);
         }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let streamBuffer = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            streamBuffer += decoder.decode(value, { stream: true });
+            let lines = streamBuffer.split('\n');
+
+            // Keep the last partial line in the buffer
+            streamBuffer = lines.pop();
+
+            for (const line of lines) {
+                const trimmedLine = line.trim();
+                if (!trimmedLine || !trimmedLine.startsWith("data: ")) continue;
+
+                const dataStr = trimmedLine.substring(6).trim();
+                if (dataStr === "[DONE]") continue;
+
+                try {
+                    const data = JSON.parse(dataStr);
+                    let chunkContent = "";
+
+                    if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+                        chunkContent = data.choices[0].delta.content;
+                    } else if (data.message && data.message.content) {
+                        // Fallback for non-streaming formats that might be wrapped
+                        chunkContent = data.message.content;
+                    } else if (data.error) {
+                        addMessage('system', `Error: ${data.error}`);
+                        activeFace.triggerSpike();
+                        continue;
+                    }
+                    if (chunkContent) {
+                        if (accumulatedContent === "") {
+                            clearInterval(thinkingInterval);
+                            agentMessageDiv.textContent = ""; // Clear 'Thinking...'
+                        }
+
+                        // 1. Check if the user is currently at the bottom (within a 50px threshold) BEFORE updating the DOM
+                        const isAtBottom = Math.abs(chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight) <= 50;
+
+                        accumulatedContent += chunkContent;
+                        
+                        // Use marked.parse if available
+                        if (window.marked) {
+                            agentMessageDiv.innerHTML = marked.parse(accumulatedContent);
+                        } else {
+                            agentMessageDiv.textContent = accumulatedContent;
+                        }
+                        
+                        // 2. Only auto-scroll if the user hasn't manually scrolled up
+                        if (isAtBottom) {
+                            scrollToBottom();
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Failed to parse SSE chunk:", dataStr, e);
+                }
+            }
+        }
+
+        // Push the final concatenated message to chat history
+        if (accumulatedContent) {
+            chatHistory.push({ role: "assistant", content: accumulatedContent });
+        } else {
+            agentMessageDiv.textContent = "No response";
+            chatHistory.push({ role: "assistant", content: "No response" });
+        }
+
     } catch (e) {
         chatHistory.pop();
         addMessage('system', `Network Error: ${e.message}`);
         activeFace.triggerSpike();
     } finally {
+        if (typeof thinkingInterval !== 'undefined') clearInterval(thinkingInterval);
+
         isProcessingRequest = false;
         activeFace.setWorkingState(false);
         activeFace.setWaitingState(false);

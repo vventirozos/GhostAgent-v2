@@ -30,9 +30,11 @@ def test_critic_system_prompt_has_hardening_rules():
 async def test_critic_check_strips_markdown():
     """Verify that _run_critic_check removes markdown blocks from revised code."""
     
-    # Setup mock agent
     ctx = MagicMock(spec=GhostContext)
     ctx.llm_client = MagicMock()
+    # Explicitly set to None to ensure routing to main node (bias isolation)
+    ctx.llm_client.coding_clients = None
+    ctx.llm_client.worker_clients = None
     # Mock chat_completion to return a revision with markdown
     mock_response = {
         "choices": [{
@@ -55,11 +57,11 @@ async def test_critic_check_strips_markdown():
     assert "```" not in revised_code
     assert revised_code == "print('Clean code')"
 
-    # Verify that it routes to the edge node
-    # The first pos arg is the payload, the keyword argument is use_worker=True
+    # Verify that it routes to the MAIN node (bias isolation)
     ctx.llm_client.chat_completion.assert_called_once()
     call_kwargs = ctx.llm_client.chat_completion.call_args.kwargs
-    assert call_kwargs.get("use_worker") is True
+    assert not call_kwargs.get("use_worker")
+    assert not call_kwargs.get("use_coding")
 
 @pytest.mark.asyncio
 async def test_critic_check_fail_open_on_error():
@@ -67,6 +69,9 @@ async def test_critic_check_fail_open_on_error():
     
     ctx = MagicMock(spec=GhostContext)
     ctx.llm_client = MagicMock()
+    # Explicitly set to None to ensure routing to main node
+    ctx.llm_client.coding_clients = None
+    ctx.llm_client.worker_clients = None
     # Mock chat_completion to raise exception
     ctx.llm_client.chat_completion = AsyncMock(side_effect=Exception("LLM Down"))
     
@@ -77,7 +82,8 @@ async def test_critic_check_fail_open_on_error():
     assert is_approved is True
     assert critique == "Critic Failed (Fail-Open)"
     
-    # Verify that it still attempted to route to the edge node before throwing the error 
+    # Verify that it still attempted to route to the main node before throwing the error 
     ctx.llm_client.chat_completion.assert_called_once()
     call_kwargs = ctx.llm_client.chat_completion.call_args.kwargs
-    assert call_kwargs.get("use_worker") is True
+    assert not call_kwargs.get("use_worker")
+    assert not call_kwargs.get("use_coding")

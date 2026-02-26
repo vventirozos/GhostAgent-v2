@@ -117,7 +117,7 @@ TOOL_DEFINITIONS = [
                     },
                     "connection_string": {
                         "type": "string",
-                        "description": "The PostgreSQL connection URI (e.g., postgresql://user:pass@host:5432/db)."
+                        "description": "Optional. The PostgreSQL connection URI. Leave empty to automatically connect to the internal default database."
                     },
                     "query": {
                         "type": "string",
@@ -128,7 +128,7 @@ TOOL_DEFINITIONS = [
                         "description": "Optional table name to filter the 'schema' action."
                     }
                 },
-                "required": ["action", "connection_string"]
+                "required": ["action"]
             }
         }
     }
@@ -184,7 +184,7 @@ def get_available_tools(context):
         "manage_tasks": lambda **kwargs: tool_manage_tasks(scheduler=context.scheduler, memory_system=context.memory_system, **kwargs),
         "dream_mode": lambda **kwargs: tool_dream_mode(context=context),
         "replan": lambda reason, **kwargs: f"Strategy Reset Triggered. Reason: {reason}\nSYSTEM: The planner will sees this and should update the TaskTree accordingly.",
-        "postgres_admin": lambda **kwargs: tool_postgres_admin(**kwargs),
+        "postgres_admin": lambda **kwargs: tool_postgres_admin(default_uri=getattr(context.args, 'default_db', 'postgresql://ghost@127.0.0.1:5432/agent'), **kwargs),
         "delegate_to_swarm": lambda **kwargs: tool_delegate_to_swarm(llm_client=context.llm_client, model_name=getattr(context.args, 'model', 'default'), scratchpad=context.scratchpad, **kwargs)
     }
     

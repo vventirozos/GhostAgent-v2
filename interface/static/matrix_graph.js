@@ -8,12 +8,12 @@ export const COLORS = {
     background: new THREE.Color('#000000'),
 
     nodeBase: new THREE.Color('#1a0000'),    // Very Dark Red
-    nodeActive: new THREE.Color('#2a03ee'),  // Dark Red
-    nodeError: new THREE.Color('#00ffff'),   // Electric Blue
+    nodeActive: new THREE.Color('#005eff'),  // Dark Red
+    nodeError: new THREE.Color('#ff00ee'),   // Electric Blue
 
-    lineBase: new THREE.Color('#6b0000'),    // Very Dark Red (lines)
-    lineActive: new THREE.Color('#880202'),  // Dark Red (lines)
-    lineError: new THREE.Color('#00ffff'),   // Electric Blue
+    lineBase: new THREE.Color('#380000'),    // Very Dark Red (lines)
+    lineActive: new THREE.Color('#4c0000'),  // Dark Red (lines)
+    lineError: new THREE.Color('#00fff2'),   // Electric Blue
 };
 // ---------------------------
 

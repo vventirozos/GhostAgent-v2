@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, Request, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uvicorn
@@ -106,10 +106,33 @@ async def chat_proxy(request: Request):
     """Proxies chat requests to the Ghost Agent."""
     try:
         body = await request.json()
-        async with httpx.AsyncClient() as client:
-            # Assuming agent is running on port 8000
-            response = await client.post("http://localhost:8000/api/chat", json=body, timeout=600.0)
-            return response.json()
+        is_streaming = body.get("stream", False)
+        
+        # We need the client to stay open if we are returning a StreamingResponse
+        # so we don't automatically close it with `async with` for the stream branch.
+        if is_streaming:
+            client = httpx.AsyncClient()
+            
+            async def stream_generator():
+                try:
+                    async with client.stream("POST", "http://localhost:8000/api/chat", json=body, timeout=600.0) as response:
+                        response.raise_for_status()
+                        async for chunk in response.aiter_bytes(chunk_size=32):
+                            yield chunk
+                finally:
+                    await client.aclose()
+                    
+            headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+            return StreamingResponse(stream_generator(), media_type="text/event-stream", headers=headers)
+        else:
+            async with httpx.AsyncClient() as client:
+                response = await client.post("http://localhost:8000/api/chat", json=body, timeout=600.0)
+                return response.json()
+                
     except Exception as e:
         logger.error(f"Chat proxy error: {e}")
         return {"error": str(e)}

@@ -81,10 +81,10 @@ async def test_frequency_penalty_removed(agent):
     assert "temperature" in payload
 
 @pytest.mark.asyncio
-async def test_dynamic_state_merged_index_0(agent):
+async def test_dynamic_state_trailing_system(agent):
     """
-    Verifies that when dynamic_state is present, it is merged into the first system prompt
-    (index 0) rather than being appended as a separate system prompt at the end.
+    Verifies that when dynamic_state is present, it is appended as a trailing system message
+    rather than being merged into the first system prompt, to preserve KV cache hits.
     """
     body = {"messages": [{"role": "system", "content": "BASE SYSTEM PROMPT"}, {"role": "user", "content": "Execute a complex task"}], "model": "Qwen-Test"}
     await agent.handle_chat(body, background_tasks=MagicMock())
@@ -92,13 +92,17 @@ async def test_dynamic_state_merged_index_0(agent):
     call_args = agent.context.llm_client.chat_completion.call_args
     messages = call_args.args[0]["messages"]
     
+    # Base system prompt is at index 0 (overwritten by standard SYSTEM_PROMPT)
     assert messages[0]["role"] == "system"
-    assert "DYNAMIC SYSTEM STATE" in messages[0]["content"]
-    assert "ROLE AND IDENTITY" in messages[0]["content"]
+    assert "You are Ghost" in messages[0]["content"]
     
-    # Ensure there's only one system prompt at the very beginning (no trailing system prompt)
+    # Dynamic state should be in the LAST message (trailing system prompt)
+    assert messages[-1]["role"] == "system"
+    assert "DYNAMIC SYSTEM STATE" in messages[-1]["content"]
+    
+    # Ensure there are exactly two system prompts in the request
     system_prompts = [m for m in messages if m["role"] == "system"]
-    assert len(system_prompts) == 1
+    assert len(system_prompts) == 2
 
 @pytest.mark.asyncio
 async def test_loop_alerts_use_user_role(agent):

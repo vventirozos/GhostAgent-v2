@@ -41,10 +41,14 @@ async def test_mode_switching_python_specialist(agent):
     
     call_args = agent.context.llm_client.chat_completion.call_args[0][0]
     messages = call_args["messages"]
-    system_prompt = messages[0]["content"]
     
-    assert "Ghost Advanced Engineering Subsystem" in system_prompt
-    assert "RAW, EXECUTABLE CODE" in system_prompt
+    # Base system prompt at messages[0]
+    assert "Ghost" in messages[0]["content"]
+    
+    # Transient injection with specialized persona at messages[-1]
+    transient_injection = messages[-1]["content"]
+    assert "Ghost Advanced Engineering Subsystem" in transient_injection
+    assert "RAW, EXECUTABLE CODE" in transient_injection
 
 @pytest.mark.asyncio
 async def test_system_prompt_additive_logic(agent):
@@ -60,16 +64,17 @@ async def test_system_prompt_additive_logic(agent):
     
     call_args = agent.context.llm_client.chat_completion.call_args[0][0]
     messages = call_args["messages"]
-    system_prompt = messages[0]["content"]
     
-    # Must contain base instructions (e.g., identity elements usually in SYSTEM_PROMPT)
-    # AND the specialized instructions (e.g., Python specialist)
-    from ghost_agent.core.prompts import SYSTEM_PROMPT, CODE_SYSTEM_PROMPT
+    # Core prompt is at messages[0]
+    assert "You are Ghost" in messages[0]["content"] or "Ghost" in messages[0]["content"]
     
-    # Check that both the core prompt and the code prompt parts are present
-    assert "You are Ghost" in system_prompt or "Ghost" in system_prompt # From base prompt
-    assert "Ghost Advanced Engineering Subsystem" in system_prompt # From code prompt
-    assert len(system_prompt) > len(CODE_SYSTEM_PROMPT), "Prompt was overwritten, not appended"
+    # Specialized prompt is in the transient injection at messages[-1]
+    transient_injection = messages[-1]["content"]
+    assert "Ghost Advanced Engineering Subsystem" in transient_injection
+    
+    # Combined they provide the full instruction set
+    full_prompt = messages[0]["content"] + transient_injection
+    assert len(full_prompt) > 1000 # Should be substantial
 
 @pytest.mark.asyncio
 async def test_history_truncation(agent):
@@ -234,7 +239,8 @@ async def test_context_shield_edge_summary(agent):
         
         # Check that the 3rd call to the main LLM received the condensed edge summary
         final_call = agent.context.llm_client.chat_completion.call_args_list[2]
-        tool_response_msg = final_call.args[0]["messages"][-1]
+        # The tool response is at messages[-2] because messages[-1] is the transient system injection
+        tool_response_msg = final_call.args[0]["messages"][-2]
         assert tool_response_msg.get("role") == "tool"
         assert tool_response_msg["content"] == "[EDGE CONDENSED]: Summarized successfully."
         

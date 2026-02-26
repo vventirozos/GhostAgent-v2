@@ -107,51 +107,21 @@ class GhostAgent:
         system_msgs = [m for m in messages if m.get("role") == "system"]
         raw_history = [m for m in messages if m.get("role") != "system"]
         
-        clean_history = []
-        seen_tool_outputs = set()
-        
-        for msg in reversed(raw_history):
-            role = msg.get("role")
-            content = str(msg.get("content", ""))
-            
-            if role == "tool":
-                tool_name = msg.get('name', 'unknown')
-                fingerprint = f"{tool_name}:{content[:100]}"
-                if fingerprint in seen_tool_outputs:
-                    continue
-                seen_tool_outputs.add(fingerprint)
-                
-            if role == "assistant":
-                lower_content = content.lower()
-                if ("memory updated" in lower_content or "memory stored" in lower_content) and len(content) < 100:
-                    continue
-                
-            clean_history.append(msg)
-            
-        clean_history.reverse()
-        compressed_history = []
-        msg_count = len(clean_history)
-        
-        for i, msg in enumerate(clean_history):
-            role, content = msg.get("role"), str(msg.get("content", ""))
-            if role == "tool" and (msg_count - i) > 4 and len(content) > 4000:
-                msg_copy = msg.copy()
-                msg_copy["content"] = content[:1000] + "\n... [OLD DATA COMPRESSED] ...\n" + content[-500:]
-                compressed_history.append(msg_copy)
-            else:
-                compressed_history.append(msg)
-
         current_tokens = sum(estimate_tokens(str(m.get("content", ""))) for m in system_msgs)
         final_history = []
-        for msg in reversed(compressed_history):
+        
+        # Pure sliding window from newest to oldest. 
+        # We NEVER mutate historical strings, we just drop the oldest ones if we run out of space.
+        for msg in reversed(raw_history):
             msg_tokens = estimate_tokens(str(msg.get("content", "")))
-            if current_tokens + msg_tokens > max_tokens: break
+            if current_tokens + msg_tokens > max_tokens: 
+                break
             final_history.append(msg)
             current_tokens += msg_tokens
             
         final_history.reverse()
         return system_msgs + final_history
-
+        
     def _prune_context(self, messages: List[Dict[str, Any]], max_tokens: int = 8000) -> List[Dict[str, Any]]:
         current_tokens = sum(estimate_tokens(str(m.get("content", ""))) for m in messages)
         if current_tokens < max_tokens:
@@ -292,19 +262,22 @@ class GhostAgent:
 
 
                 base_prompt = SYSTEM_PROMPT.replace("{{PROFILE}}", profile_context)
+                base_prompt += working_memory_context
+                base_prompt = base_prompt.replace("\r", "")
+                
+                active_persona = ""
                 if has_dba_intent and not is_meta_task:
                     current_temp = 0.15
                     pretty_log("Mode Switch", "Ghost PostgreSQL DBA Activated", icon=Icons.MODE_GHOST)
-                    base_prompt += "\n\n" + DBA_SYSTEM_PROMPT.replace("{{PROFILE}}", profile_context)
+                    active_persona = f"### SPECIALIST SUBSYSTEM ACTIVATED\n{DBA_SYSTEM_PROMPT.replace('{{PROFILE}}', profile_context)}\n\n"
                 elif has_coding_intent:
                     current_temp = 0.2
                     pretty_log("Mode Switch", "Ghost Python Specialist Activated", icon=Icons.MODE_GHOST)
-                    base_prompt += "\n\n" + CODE_SYSTEM_PROMPT.replace("{{PROFILE}}", profile_context)
+                    active_persona = f"### SPECIALIST SUBSYSTEM ACTIVATED\n{CODE_SYSTEM_PROMPT.replace('{{PROFILE}}', profile_context)}\n\n"
                 else:
                     current_temp = self.context.args.temperature
-                    
-                base_prompt += working_memory_context
-                base_prompt = base_prompt.replace("\r", "")
+
+                # base_prompt += active_persona  <-- RELOCATED to user message for cache efficacy
                 
                 found_system = False
                 for m in messages:
@@ -316,29 +289,34 @@ class GhostAgent:
                      messages.append({"role": "system", "content": f"SYSTEM DATA DUMP:\n{current_tasks}\n\nINSTRUCTION: The user cannot see the data above. You MUST copy the task list into your **FINAL ANSWER** now."})
                 
                 is_fact_check = "fact-check" in lc or "verify" in lc
-                trivial_triggers = ["who are you", "hello", " hi ", "hey there", "how are you", "what's up", "name is"]
-                is_trivial = any(t in last_user_content.lower() for t in trivial_triggers)
                 
+                tool_action_verbs = [
+                    "search", "download", "run", "execute", "schedule", "read", "fetch", 
+                    "calculate", "count", "summarize", "find", "open", "check", "test",
+                    "delete", "remove", "rename", "move", "copy", "scrape", "ingest"
+                ]
+                has_action_verb = any(v in lc for v in tool_action_verbs)
+                
+                is_conversational = not has_coding_intent and not has_dba_intent and not is_meta_task and not has_action_verb
                 
                 should_fetch_memory = (
-                    not is_fact_check and 
-                    not is_trivial and
+                    not is_fact_check and
                     (not has_coding_intent or "remember" in last_user_content or "previous" in last_user_content)
                 )
                 
+                fetched_mem_context = ""
                 if self.context.memory_system and last_user_content and should_fetch_memory:
                     mem_context = await asyncio.to_thread(self.context.memory_system.search, last_user_content)
                     if mem_context:
                         mem_context = mem_context.replace("\r", "")
                         pretty_log("Memory Context", f"Retrieved for: {last_user_content}", icon=Icons.BRAIN_CTX)
-                        messages.insert(1, {"role": "system", "content": f"[MEMORY CONTEXT]:\n{mem_context}"})
+                        fetched_mem_context = f"### MEMORY CONTEXT:\n{mem_context}\n\n"
                         
+                fetched_playbook = ""
                 if self.context.skill_memory:
                     playbook = await asyncio.to_thread(self.context.skill_memory.get_playbook_context, query=last_user_content, memory_system=self.context.memory_system)
-                    for m in messages:
-                        if m.get("role") == "system":
-                            m["content"] += f"\n\n{playbook}"
-                            break
+                    if playbook:
+                        fetched_playbook = f"### SKILL PLAYBOOK:\n{playbook}\n\n"
                             
                 messages = self.process_rolling_window(messages, self.context.args.max_context)
                 
@@ -379,7 +357,7 @@ class GhostAgent:
                         sandbox_state = "N/A"
                     
                     use_plan = getattr(self.context.args, 'use_planning', True)
-                    if use_plan and not is_trivial:
+                    if use_plan and not is_conversational:
                         pretty_log("Reasoning Loop", f"Turn {turn+1} Strategic Analysis...", icon=Icons.BRAIN_PLAN)
                         
                         last_tool_output = self._prepare_planning_context(tools_run_this_turn[-2:])
@@ -399,14 +377,12 @@ class GhostAgent:
                         safe_sandbox = str(sandbox_state)
                         if len(safe_sandbox) > 1500: safe_sandbox = safe_sandbox[:1500] + "\n...[TRUNCATED]"
 
-                        planning_prompt = f"""
+                        planner_transient = f"""
 ### CURRENT SITUATION
 SCRAPBOOK:
 {safe_scratch}
 SANDBOX STATE:
 {safe_sandbox if has_coding_intent else 'N/A'}
-### RECENT CONVERSATION:
-{recent_transcript}
 
 User Request: {last_user_content}
 Last Tool Output: {last_tool_output}
@@ -421,9 +397,15 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
 ### CURRENT PLAN (JSON)
 {json.dumps(current_plan_json, indent=2) if current_plan_json else "No plan yet."}
 """
+                        planner_messages = [
+                            {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+                            {"role": "user", "content": f"### RECENT CONVERSATION:\n{recent_transcript}"},
+                            {"role": "system", "content": planner_transient.strip()}
+                        ]
+                        
                         planning_payload = {
                             "model": model,
-                            "messages": [{"role": "system", "content": PLANNING_SYSTEM_PROMPT}, {"role": "user", "content": planning_prompt}],
+                            "messages": planner_messages,
                             "temperature": 0.0,
                             "top_p": 0.1,
                             "max_tokens": 1024,
@@ -473,6 +455,9 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                         pretty_log("Brainstorming", f"Adjusting variance to {active_temp:.2f} to solve error", icon=Icons.IDEA)
                     else:
                         active_temp = current_temp
+                        
+                    if is_conversational and active_temp < 0.7:
+                        active_temp = 0.7
 
                     # Proactive Context Pruning before request
                     messages = self._prune_context(messages, max_tokens=self.context.args.max_context)
@@ -480,21 +465,21 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                     dynamic_state = f"### DYNAMIC SYSTEM STATE\nCURRENT TIME: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\nSCRAPBOOK:\n{scratch_data}\n\n"
                     if has_coding_intent:
                         dynamic_state += f"CURRENT SANDBOX STATE:\n{sandbox_state}\n\n"
-                    if use_plan and not is_trivial and 'thought_content' in locals() and thought_content:
+                    if use_plan and not is_conversational and 'thought_content' in locals() and thought_content:
                         dynamic_state += f"ACTIVE STRATEGY & PLAN:\nTHOUGHT: {thought_content}\nPLAN:\n{task_tree.render()}\nFOCUS TASK: {next_action_id}\n"
                         
                         if str(next_action_id).strip().lower() == "none":
-                            dynamic_state += "CRITICAL INSTRUCTION: DO NOT USE TOOLS this turn. Answer the user directly.\n"
+                            dynamic_state += "CRITICAL INSTRUCTION: DO NOT USE TOOLS this turn. Answer the user directly. DO NOT ECHO OR REPEAT THE PLAN IN YOUR RESPONSE.\n"
                             force_final_response = True
                         else:
-                            dynamic_state += "CRITICAL INSTRUCTION: Execute ONLY the tool required for the FOCUS TASK.\n"
+                            dynamic_state += "CRITICAL INSTRUCTION: Execute ONLY the tool required for the FOCUS TASK. DO NOT ECHO OR REPEAT THE PLAN. DO NOT HALLUCINATE TOOL OUTPUTS.\n"
 
+                    # Bundle ALL dynamic context that changes per-request or per-turn
+                    transient_injection = f"{active_persona}{fetched_playbook}{fetched_mem_context}{dynamic_state.strip()}"
+                    
                     req_messages = [m.copy() for m in messages]
-                    if req_messages and req_messages[0].get("role") == "system":
-                        req_messages[0]["content"] += f"\n\n{dynamic_state.strip()}"
-                    else:
-                        req_messages.insert(0, {"role": "system", "content": dynamic_state.strip()})
-
+                    # Append transient state as a trailing system message to perfectly preserve historical KV Cache
+                    req_messages.append({"role": "system", "content": transient_injection})
                     payload = {
                         "model": model, 
                         "messages": req_messages, 
@@ -506,7 +491,8 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                     target_tool = locals().get("required_tool", "all")
                     
                     # Dynamic Tool Pruning to accelerate KV-cache prefill
-                    if force_final_response or target_tool.lower() == "none":
+                    is_final_generation = force_final_response or target_tool.lower() == "none"
+                    if is_final_generation:
                         pass # Omit tools array entirely for pure text generation
                     elif target_tool != "all":
                         filtered_tools = [t for t in get_active_tool_definitions(self.context) if t["function"]["name"] == target_tool]
@@ -518,10 +504,36 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                     
                     pretty_log("LLM Request", f"Turn {turn+1} | Temp {active_temp:.2f}", icon=Icons.LLM_ASK)
                     
+                    if is_final_generation and stream_response:
+                        async def stream_wrapper():
+                            full_content = ""
+                            async for chunk in self.context.llm_client.stream_chat_completion(payload, use_coding=has_coding_intent):
+                                yield chunk
+                                try:
+                                    chunk_str = chunk.decode("utf-8")
+                                    if chunk_str.startswith("data: ") and chunk_str.strip() != "data: [DONE]":
+                                        chunk_data = json.loads(chunk_str[6:])   
+                                        if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
+                                            delta = chunk_data["choices"][0].get("delta", {})
+                                            if "content" in delta:
+                                                full_content += delta["content"]
+                                except Exception:
+                                    pass
+                            
+                            if self.context.args.smart_memory > 0.0 and last_user_content and not forget_was_called and not last_was_failure:
+                                background_tasks.add_task(self.run_smart_memory_task, f"User: {last_user_content}\nAI: {full_content}", model, self.context.args.smart_memory)
+                                
+                            if was_complex_task or execution_failure_count > 0:
+                                if not force_stop or "READY TO FINALIZE" in locals().get('thought_content', '').upper():
+                                    if background_tasks:
+                                        background_tasks.add_task(self._execute_post_mortem, last_user_content, list(tools_run_this_turn), full_content, model)
+                                        
+                        return stream_wrapper(), created_time, req_id
+
                     # Ensure msg is always defined in this scope
                     msg = {"role": "assistant", "content": "", "tool_calls": []}
                     try:
-                        data = await self.context.llm_client.chat_completion(payload)
+                        data = await self.context.llm_client.chat_completion(payload, use_coding=has_coding_intent)
                         if "choices" in data and len(data["choices"]) > 0:
                             msg = data["choices"][0]["message"]
                     except (httpx.ConnectError, httpx.ConnectTimeout):
@@ -551,7 +563,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                             # RETRY ONCE with pruned context
                             try:
                                 payload["messages"] = messages
-                                data = await self.context.llm_client.chat_completion(payload)
+                                data = await self.context.llm_client.chat_completion(payload, use_coding=has_coding_intent)
                                 if "choices" in data and len(data["choices"]) > 0:
                                     msg = data["choices"][0]["message"]
                             except Exception as retry_e:
@@ -597,6 +609,25 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                                 
                         # Radically erase the raw syntax so it doesn't pollute the user's chat output
                         content = re.sub(r'<tool_call>.*?</tool_call>', '', content, flags=re.DOTALL | re.IGNORECASE).strip()
+                    
+                    # --- HALLUCINATION & LEAK SCRUBBERS ---
+                    if content:
+                        # 1. Hard Truncation for System Prompt Bleed
+                        for bleed_marker in ["# Tools", "<tools>", "CRITICAL INSTRUCTION:", "You may call one or more functions", '{"type": "function"']:
+                            if bleed_marker in content:
+                                content = content.split(bleed_marker)[0]
+                        
+                        # 2. Regex scrubbers for XML and Execution Artifacts
+                        content = re.sub(r'<tool_response>.*?(?:</tool_response>|$)', '', content, flags=re.DOTALL | re.IGNORECASE)
+                        content = re.sub(r'--- EXECUTION RESULT ---.*?(?:------------------------|$)', '', content, flags=re.DOTALL)
+                        
+                        # 3. Task Tree Regurgitation Scrubbers (catches states with or without emojis)
+                        content = re.sub(r'(?m)^\s*(?:🔄|🟢|⏳|✅|❌|🛑|➖)\s*\[.*?\].*?\n?', '', content)
+                        content = re.sub(r'(?m)^.*?\((?:IN_PROGRESS|READY|PENDING|DONE|FAILED|BLOCKED)\)\s*\n?', '', content)
+                        content = re.sub(r'(?m)^\s*(?:\[)?task_\d+(?:\])?\s*\n?', '', content)
+                        content = re.sub(r'(?m)^\s*(?:FOCUS TASK|ACTIVE STRATEGY & PLAN|PLAN|THOUGHT):.*?\n?', '', content)
+                        
+                        content = content.strip()
                     # ---------------------------------------------------------
 
                     if content:
@@ -811,6 +842,21 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                             else:
                                 execution_failure_count = 0
 
+                # --- FINAL OUTPUT SCRUBBER ---
+                # Apply scrubbers FIRST so we don't accidentally scrub our own manual fallback injections
+                for bleed_marker in ["# Tools", "<tools>", "CRITICAL INSTRUCTION:", "You may call one or more functions", '{"type": "function"']:
+                    if bleed_marker in final_ai_content:
+                        final_ai_content = final_ai_content.split(bleed_marker)[0]
+
+                final_ai_content = re.sub(r'<tool_call>.*?</tool_call>', '', final_ai_content, flags=re.DOTALL | re.IGNORECASE)
+                final_ai_content = re.sub(r'<tool_response>.*?(?:</tool_response>|$)', '', final_ai_content, flags=re.DOTALL | re.IGNORECASE)
+                final_ai_content = re.sub(r'--- EXECUTION RESULT ---.*?(?:------------------------|$)', '', final_ai_content, flags=re.DOTALL)
+                final_ai_content = re.sub(r'(?m)^\s*(?:🔄|🟢|⏳|✅|❌|🛑|➖)\s*\[.*?\].*?\n?', '', final_ai_content)
+                final_ai_content = re.sub(r'(?m)^.*?\((?:IN_PROGRESS|READY|PENDING|DONE|FAILED|BLOCKED)\)\s*\n?', '', final_ai_content)
+                final_ai_content = re.sub(r'(?m)^\s*(?:\[)?task_\d+(?:\])?\s*\n?', '', final_ai_content)
+                final_ai_content = re.sub(r'(?m)^\s*(?:FOCUS TASK|ACTIVE STRATEGY & PLAN|PLAN|THOUGHT):.*?\n?', '', final_ai_content)
+                final_ai_content = final_ai_content.strip()
+
                 # --- THE "PERFECT IT" PROTOCOL INJECTION ---
                 # Only trigger proactive optimization for heavy engineering/research tasks
                 heavy_tools_used = any(t.get('name') in ['execute', 'deep_research'] for t in tools_run_this_turn)
@@ -839,11 +885,16 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                             final_ai_content = "Task finished successfully, but optimization generation failed."
                 elif tools_run_this_turn and not final_ai_content:
                     last_out = tools_run_this_turn[-1].get('content', '')
+                    
+                    # Extract just the pure STDOUT so the UI fallback is clean
+                    if "STDOUT/STDERR:" in last_out:
+                        last_out = last_out.split("STDOUT/STDERR:")[1].strip()
+                        if "DIAGNOSTIC HINT" in last_out:
+                            last_out = last_out.split("DIAGNOSTIC HINT")[0].strip().strip("-").strip()
+                            
                     preview = (last_out[:2000] + '\n...[Truncated]') if len(last_out) > 2000 else last_out
                     final_ai_content = f"Process finished successfully.\n\n### Final Output:\n```text\n{preview}\n```"
-
-                # --- FINAL OUTPUT SCRUBBER ---
-                final_ai_content = re.sub(r'<tool_call>.*?</tool_call>', '', final_ai_content, flags=re.DOTALL | re.IGNORECASE).strip()
+                
                 if not final_ai_content:
                     final_ai_content = "Task executed successfully."
 
@@ -874,7 +925,15 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                 "temperature": 0.0,
                 "response_format": {"type": "json_object"}
             }
-            data = await self.context.llm_client.chat_completion(payload, use_worker=True)
+            
+            use_coding_flag = bool(getattr(self.context.llm_client, 'coding_clients', None))
+            use_worker_flag = not use_coding_flag and bool(getattr(self.context.llm_client, 'worker_clients', None))
+            
+            data = await self.context.llm_client.chat_completion(
+                payload, 
+                use_coding=use_coding_flag, 
+                use_worker=use_worker_flag
+            )
             content = data["choices"][0]["message"]["content"]
             result = extract_json_from_text(content)
             

@@ -9,7 +9,7 @@ from ..utils.helpers import get_utc_timestamp
 logger = logging.getLogger("GhostAgent")
 
 class LLMClient:
-    def __init__(self, upstream_url: str, tor_proxy: str = None, swarm_nodes: list = None, worker_nodes: list = None, visual_nodes: list = None):
+    def __init__(self, upstream_url: str, tor_proxy: str = None, swarm_nodes: list = None, worker_nodes: list = None, visual_nodes: list = None, coding_nodes: list = None):
         self.upstream_url = upstream_url
         limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
         
@@ -86,6 +86,24 @@ class LLMClient:
                     "model": node["model"]
                 })
 
+        self.coding_clients = []
+        self._coding_index = 0
+        if coding_nodes:
+            for node in coding_nodes:
+                client = httpx.AsyncClient(
+                    base_url=node["url"], 
+                    timeout=600.0, 
+                    limits=limits,
+                    proxy=proxy_url,
+                    follow_redirects=True,
+                    http2=False
+                )
+                self.coding_clients.append({
+                    "client": client,
+                    "url": node["url"],
+                    "model": node["model"]
+                })
+
     async def close(self):
         await self.http_client.aclose()
         for node in getattr(self, 'swarm_clients', []):
@@ -93,6 +111,8 @@ class LLMClient:
         for node in getattr(self, 'worker_clients', []):
             await node["client"].aclose()
         for node in getattr(self, 'vision_clients', []):
+            await node["client"].aclose()
+        for node in getattr(self, 'coding_clients', []):
             await node["client"].aclose()
 
     def get_swarm_node(self, target_model: str = None) -> Optional[Dict[str, Any]]:
@@ -145,7 +165,25 @@ class LLMClient:
         self._worker_index = (self._worker_index + 1) % len(worker_clients)
         return node
 
-    async def chat_completion(self, payload: Dict[str, Any], use_swarm: bool = False, use_worker: bool = False, use_vision: bool = False) -> Dict[str, Any]:
+    def get_coding_node(self, target_model: str = None) -> Optional[Dict[str, Any]]:
+        coding_clients = getattr(self, 'coding_clients', [])
+        if not coding_clients:
+            return None
+            
+        if target_model:
+            target_lower = target_model.lower()
+            for node in coding_clients:
+                if target_lower in node["model"].lower():
+                    return node
+                    
+        if not hasattr(self, '_coding_index'):
+            self._coding_index = 0
+            
+        node = coding_clients[self._coding_index]
+        self._coding_index = (self._coding_index + 1) % len(coding_clients)
+        return node
+
+    async def chat_completion(self, payload: Dict[str, Any], use_swarm: bool = False, use_worker: bool = False, use_vision: bool = False, use_coding: bool = False) -> Dict[str, Any]:
         """
         Sends a chat completion request to the upstream LLM with robust retry logic.
         """
@@ -228,6 +266,44 @@ class LLMClient:
                         
                 pretty_log("Worker Compute Failed", "All worker nodes failed, falling back to main upstream", level="WARNING", icon=Icons.WARN)
 
+        elif use_coding and getattr(self, 'coding_clients', None):
+            target_model = payload.get("model")
+            tried_nodes = []
+            
+            node = self.get_coding_node(target_model)
+            
+            if node:
+                for _ in range(len(self.coding_clients)):
+                    if not node:
+                        break
+                        
+                    if node in tried_nodes:
+                        target_model = None
+                        node = self.get_coding_node(target_model)
+                        
+                    loop_breaker = 0
+                    while node in tried_nodes and loop_breaker < len(self.coding_clients):
+                        node = self.get_coding_node(None)
+                        loop_breaker += 1
+                        
+                    tried_nodes.append(node)
+                    
+                    pretty_log("Coding Compute", f"Routing request to Coding Node ({node['model']})", level="INFO", icon=Icons.TOOL_CODE)
+                    try:
+                        node_payload = payload.copy()
+                        node_payload["model"] = node["model"]
+                        
+                        resp = await node["client"].post("/v1/chat/completions", json=node_payload)
+                        resp.raise_for_status()
+                        return resp.json()
+                    except Exception as e:
+                        pretty_log(f"Coding node ({node['model']}) failed: {type(e).__name__}, trying next...", level="WARNING", icon=Icons.WARN)
+                        target_model = None
+                        node = self.get_coding_node(target_model)
+                        continue
+                        
+                pretty_log("Coding Compute Failed", "All coding nodes failed, falling back to main upstream", level="WARNING", icon=Icons.WARN)
+
         elif use_swarm and self.swarm_clients:
             target_model = payload.get("model")
             tried_nodes = []
@@ -309,6 +385,52 @@ class LLMClient:
                 pretty_log("Embedding Fatal", str(e), level="ERROR", icon=Icons.FAIL)
                 raise
 
+    async def stream_chat_completion(self, payload: Dict[str, Any], use_coding: bool = False):
+        """
+        Streams a chat completion request from the upstream LLM directly to the client.
+        """
+        payload["stream"] = True
+        
+        client_to_use = self.http_client
+        if use_coding and getattr(self, 'coding_clients', None):
+            node = self.get_coding_node(payload.get("model"))
+            if node:
+                payload["model"] = node["model"]
+                client_to_use = node["client"]
+                pretty_log("Coding Compute", f"Routing request to Coding Node ({node['model']})", level="INFO", icon=Icons.TOOL_CODE)
+
+        # We wrap in a generic retry similar to the non-streaming one if it fails at the start.
+        # But once bytes are yielded, if it fails mid-stream, it breaks.
+        for attempt in range(10): 
+            try:
+                # We use stream() to keep the connection open and read chunks
+                req = client_to_use.build_request("POST", "/v1/chat/completions", json=payload)
+                resp = await client_to_use.send(req, stream=True)
+                resp.raise_for_status()
+                
+                async for chunk in resp.aiter_lines():
+                    if chunk:
+                        yield f"{chunk}\n\n".encode('utf-8')
+                return
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ConnectError) as e:
+                if attempt < 9:
+                    wait_time = min(2 ** (attempt + 1), 30)
+                    pretty_log("Upstream Stream Retry", f"[{attempt+1}/10] {type(e).__name__}. Retrying in {wait_time}s...", icon=Icons.RETRY)
+                    await asyncio.sleep(wait_time)
+                else:
+                    pretty_log("Upstream Stream Failed", f"Failed after 10 attempts: {str(e)}", level="ERROR", icon=Icons.FAIL)
+                    # Yield an error event to the client if the stream failed to connect
+                    error_data = {"error": f"Stream failed after 10 attempts: {str(e)}"}
+                    yield f"data: {json.dumps(error_data)}\n\n".encode('utf-8')
+                    yield b"data: [DONE]\n\n"
+                    raise
+            except httpx.HTTPStatusError as e:
+                pretty_log("Upstream Stream Error", f"HTTP {e.response.status_code}: {await e.response.aread()}", level="ERROR", icon=Icons.FAIL)
+                raise
+            except Exception as e:
+                pretty_log("Upstream Stream Fatal", str(e), level="ERROR", icon=Icons.FAIL)
+                raise
+
     async def stream_openai(self, model: str, content: str, created_time: int, req_id: str):
         chunk_id = f"chatcmpl-{req_id}"
         start_chunk = {
@@ -317,11 +439,14 @@ class LLMClient:
         }
         yield f"data: {json.dumps(start_chunk)}\n\n".encode('utf-8')
 
-        content_chunk = {
-            "id": chunk_id, "object": "chat.completion.chunk", "created": created_time,
-            "model": model, "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]
-        }
-        yield f"data: {json.dumps(content_chunk)}\n\n".encode('utf-8')
+        for i in range(0, len(content), 15):
+            slice_str = content[i:i+15]
+            content_chunk = {
+                "id": chunk_id, "object": "chat.completion.chunk", "created": created_time,
+                "model": model, "choices": [{"index": 0, "delta": {"content": slice_str}, "finish_reason": None}]
+            }
+            yield f"data: {json.dumps(content_chunk)}\n\n".encode('utf-8')
+            await asyncio.sleep(0.01)
 
         stop_chunk = {
             "id": chunk_id, "object": "chat.completion.chunk", "created": created_time,

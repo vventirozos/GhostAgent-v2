@@ -116,3 +116,38 @@ async def test_intent_coding_fallback_execute(mock_pretty_log, mock_agent):
     logs3 = [call.args for call in mock_pretty_log.call_args_list]
     python_mode_logs3 = [l for l in logs3 if len(l) > 1 and "Ghost Python Specialist Activated" in str(l[1])]
     assert len(python_mode_logs3) > 0, "Failed: '.py' did not activate Python Specialist!"
+
+@pytest.mark.asyncio
+async def test_intent_sets_use_coding_flag(mock_agent):
+    """Verify that handle_chat sets use_coding=True when coding intent is detected."""
+    # Positive Test: "script" SHOULD trigger coding intent
+    message = {"role": "user", "content": "Can you write a bash script for this?"}
+    
+    mock_agent.run_smart_memory_task = MagicMock()
+    mock_agent.context.llm_client.chat_completion = AsyncMock(return_value={
+        "choices": [{"message": {"content": "Ok", "tool_calls": []}}]
+    })
+    
+    await mock_agent.handle_chat({"messages": [message]}, MagicMock())
+    
+    # Assert that chat_completion was called with use_coding=True
+    call_kwargs = mock_agent.context.llm_client.chat_completion.call_args.kwargs
+    assert call_kwargs.get("use_coding") is True
+
+@pytest.mark.asyncio
+async def test_intent_sets_use_coding_flag_negative(mock_agent):
+    """Verify that handle_chat sets use_coding=False when NO coding intent is detected."""
+    # Negative Test: conversational message
+    message = {"role": "user", "content": "Hello there."}
+    
+    mock_agent.run_smart_memory_task = MagicMock()
+    mock_agent.context.llm_client.chat_completion = AsyncMock(return_value={
+        "choices": [{"message": {"content": "Ok", "tool_calls": []}}]
+    })
+    
+    await mock_agent.handle_chat({"messages": [message]}, MagicMock())
+    
+    # Assert that chat_completion was called with use_coding=False
+    call_kwargs = mock_agent.context.llm_client.chat_completion.call_args.kwargs
+    assert call_kwargs.get("use_coding") is False
+

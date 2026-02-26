@@ -143,7 +143,14 @@ async def chat_proxy(request: Request, background_tasks: BackgroundTasks):
     body = None
     
     if stream:
-        return StreamingResponse(agent.context.llm_client.stream_openai(model, content, created_time, req_id), media_type="text/event-stream")
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+        if hasattr(content, '__aiter__'):
+            return StreamingResponse(content, media_type="text/event-stream", headers=headers)
+        return StreamingResponse(agent.context.llm_client.stream_openai(model, content, created_time, req_id), media_type="text/event-stream", headers=headers)
     
     return JSONResponse({
         "id": f"chatcmpl-{req_id}", "object": "chat.completion", "created": created_time, "model": model,
