@@ -13,7 +13,7 @@ from ..utils.logging import Icons, pretty_log
 from ..utils.sanitizer import sanitize_code
 from .file_system import _get_safe_path
 
-async def tool_execute(filename: str, content: str, sandbox_dir: Path, sandbox_manager, scrapbook=None, args: List[str] = None, memory_dir: Path = None, **kwargs):
+async def tool_execute(filename: str, content: str, sandbox_dir: Path, sandbox_manager, scrapbook=None, args: List[str] = None, memory_dir: Path = None, stateful: bool = False, **kwargs):
     # --- 🛡️ HIJACK LAYER: CODE SANITIZATION ---
     
     # Helper for consistent error reporting
@@ -57,8 +57,43 @@ async def tool_execute(filename: str, content: str, sandbox_dir: Path, sandbox_m
 
     # 3. Final Trim
     content = content.strip()
+    
+    # 4. Stateful Execution Wrapper (Jupyter-like behavior)
+    if ext == "py" and stateful:
+        pretty_log("Stateful Execution", "Injecting Dill State Manager", icon=Icons.TOOL_CODE)
+        state_file = "/workspace/.ghost_state.dill"
+        wrapper_code = f"""
+import os, sys
+try:
+    import dill
+except ImportError:
+    print("SYSTEM ERROR: 'dill' library missing. Run `pip install dill`.")
+    sys.exit(1)
+
+# 1. Load previous state
+if os.path.exists("{state_file}"):
+    try:
+        dill.load_session("{state_file}")
+    except Exception as e:
+        print(f"Warning: Could not load previous state: {{e}}")
+
+# --- AGENT CODE START ---
+{content}
+# --- AGENT CODE END ---
+
+# 2. Save new state
+try:
+    dill.dump_session("{state_file}")
+except Exception as e:
+    print(f"\\nWarning: Could not save state for next turn: {{e}}")
+"""
+        content = wrapper_code.strip()
+
     # ----------------------------------------
-    pretty_log("Execution Task", filename, icon=Icons.TOOL_CODE)
+    if stateful:
+        pretty_log("Execution Task", f"{filename} [STATEFUL]", icon=Icons.TOOL_CODE)
+    else:
+        pretty_log("Execution Task", filename, icon=Icons.TOOL_CODE)
     
     if not sandbox_manager: return _format_error("Error: Sandbox manager not initialized.")
     if not filename: return _format_error("Error: filename is required.")

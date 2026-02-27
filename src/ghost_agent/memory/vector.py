@@ -251,7 +251,10 @@ class VectorMemory:
                             threshold = 0.8 if m_type == 'manual' else 0.65
                         else:
                             # General technical memory needs strict relevance
-                            threshold = 0.65 if m_type == 'manual' else 0.55
+                            if m_type == 'document':
+                                threshold = 1.25 # Relaxed for Asymmetric QA (Short Query vs Long Document Chunk)
+                            else:
+                                threshold = 0.65 if m_type == 'manual' else 0.55
 
                         if dist < threshold or is_name_memory or is_summary:
                             priority_score = 1
@@ -259,8 +262,8 @@ class VectorMemory:
                             if is_name_memory: priority_score = -20
                             elif is_summary: priority_score = -15
                             elif is_identity_batch: priority_score = -10
+                            elif m_type == 'document': priority_score = -5 # Elevate document priority above general manual/auto
                             elif m_type == 'manual': priority_score = 0
-                            elif m_type == 'document': priority_score = 2
 
                             candidates.append({
                                 "doc": doc,

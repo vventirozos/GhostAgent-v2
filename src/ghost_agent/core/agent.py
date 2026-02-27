@@ -166,17 +166,13 @@ class GhostAgent:
         async with self.memory_semaphore:
             interaction_context = interaction_context.replace("\r", "")
             ic_lower = interaction_context.lower()
-            ic_parts = ic_lower.split("ai:")
-            user_msg = ic_parts[0] if len(ic_parts) > 0 else ""
-            ai_msg = ic_parts[1] if len(ic_parts) > 1 else ""
-            
             summary_triggers = ["summarize", "summary", "recall", "tell me about", "what is", "recap", "forget", "list documents"]
-            is_requesting_summary = any(w in user_msg for w in summary_triggers)
+            is_requesting_summary = any(w in ic_lower for w in summary_triggers)
             
-            if is_requesting_summary and len(ai_msg) > 500:
+            if is_requesting_summary and len(interaction_context) > 1500:
                 return
                 
-            final_prompt = SMART_MEMORY_PROMPT + f"\n{interaction_context}"
+            final_prompt = SMART_MEMORY_PROMPT + f"\n\n### EPISODE LOG:\n{interaction_context}"
             try:
                 payload = {"model": model_name, "messages": [{"role": "user", "content": final_prompt}], "stream": False, "temperature": 0.1, "response_format": {"type": "json_object"}}
                 data = await self.context.llm_client.chat_completion(payload, use_worker=True)
@@ -193,10 +189,46 @@ class GhostAgent:
                         pretty_log("Auto Memory Skip", f"Discarded generic knowledge: {fact}", icon=Icons.STOP)
                         return
                     memory_type = "identity" if (score >= 0.9 and profile_up) else "auto"
-                    await asyncio.to_thread(self.context.memory_system.smart_update, fact, memory_type)
+                    
+                    # --- CONTRADICTION ENGINE (LLM-Driven Belief Revision) ---
+                    try:
+                        candidates = await asyncio.to_thread(self.context.memory_system.search_advanced, fact, limit=3)
+                        ids_to_delete = []
+                        old_facts = []
+                        
+                        if candidates:
+                            for c in candidates:
+                                if c.get('score', 1.0) < 0.6: # Broad threshold to catch potential semantic collisions
+                                    old_facts.append({"id": c['id'], "text": c['text']})
+                                    
+                        if old_facts:
+                            eval_prompt = f"NEW FACT:\n{fact}\n\nOLD FACTS:\n" + "\n".join([f"ID: {f['id']} | TEXT: {f['text']}" for f in old_facts]) + "\n\nAnalyze if the NEW FACT contradicts, updates, or supersedes any OLD FACTS. Return ONLY a JSON object with a list of 'ids' to delete. If they safely coexist (e.g. they refer to different topics/projects), return an empty list.\n\nExample: {{\"ids\": [\"ID:123\"]}}"
+                            eval_payload = {"model": model_name, "messages": [{"role": "system", "content": "You are a Belief Revision Engine. Output JSON."}, {"role": "user", "content": eval_prompt}], "temperature": 0.0, "response_format": {"type": "json_object"}}
+                            eval_data = await self.context.llm_client.chat_completion(eval_payload, use_worker=True)
+                            eval_res = extract_json_from_text(eval_data["choices"][0]["message"]["content"])
+                            
+                            raw_ids = eval_res.get("ids", [])
+                            ids_to_delete = [str(i).replace("ID: ", "").replace("ID:", "").strip() for i in raw_ids]
+                            
+                        if ids_to_delete:
+                            await asyncio.to_thread(self.context.memory_system.collection.delete, ids=ids_to_delete)
+                            pretty_log("Belief Revision", f"Erased {len(ids_to_delete)} outdated/contradicting memories.", icon=Icons.CUT)
+                            
+                    except Exception as ce:
+                        logger.error(f"Contradiction Engine error: {ce}")
+                        
+                    # Save the new fact (bypassing the old simplistic smart_update math check, since we just logically validated it)
+                    from ..utils.helpers import get_utc_timestamp
+                    await asyncio.to_thread(self.context.memory_system.add, fact, {"timestamp": get_utc_timestamp(), "type": memory_type})
                     pretty_log("Auto Memory Store", f"[{score:.2f}] {fact}", icon=Icons.MEM_SAVE)
+                    
                     if memory_type == "identity" and self.context.profile_memory:
-                        self.context.profile_memory.update(profile_up.get("category", "notes"), profile_up.get("key", "info"), profile_up.get("value", fact))
+                        await asyncio.to_thread(
+                            self.context.profile_memory.update,
+                            profile_up.get("category", "notes"), 
+                            profile_up.get("key", "info"), 
+                            profile_up.get("value", fact)
+                        )
             except Exception as e: logger.error(f"Smart memory task failed: {e}")
 
     async def _execute_post_mortem(self, last_user_content: str, tools_run: list, final_ai_content: str, model: str):
@@ -205,7 +237,7 @@ class GhostAgent:
             for t_msg in tools_run[-5:]:
                 history_summary += f"Tool {t_msg.get('name', 'unknown')}: {str(t_msg.get('content', ''))[:200]}\n"
                 
-            learn_prompt = f"### TASK POST-MORTEM\nReview this successful but complex interaction. Did the agent encounter a specific error, hurdle, or mistake that required a unique solution? If so, extract it as a lesson.\n\nHISTORY:\n{history_summary}\n\nFINAL AI: {final_ai_content[:500]}\n\nReturn ONLY a JSON object with 'task', 'mistake', and 'solution'. If no unique lesson is found, return null."
+            learn_prompt = f"### TASK POST-MORTEM\nReview this interaction. The agent either struggled and succeeded, OR failed completely. Identify the core technical error, hallucination, or bad strategy. Extract a concrete rule to fix or avoid this in the future.\n\nHISTORY:\n{history_summary}\n\nFINAL AI: {final_ai_content[:500]}\n\nReturn ONLY a JSON object with 'task', 'mistake', and 'solution' (what to do instead next time/the anti-pattern to avoid). If no unique technical lesson is found, return null."
             
             payload = {"model": model, "messages": [{"role": "system", "content": "You are a Meta-Cognitive Analyst."}, {"role": "user", "content": learn_prompt}], "temperature": 0.1, "response_format": {"type": "json_object"}}
             l_data = await self.context.llm_client.chat_completion(payload, use_worker=True)
@@ -213,7 +245,11 @@ class GhostAgent:
             if l_content and "null" not in l_content.lower():
                 l_json = extract_json_from_text(l_content)
                 if all(k in l_json for k in ["task", "mistake", "solution"]):
-                    self.context.skill_memory.learn_lesson(l_json["task"], l_json["mistake"], l_json["solution"], memory_system=self.context.memory_system)
+                    await asyncio.to_thread(
+                        self.context.skill_memory.learn_lesson,
+                        l_json["task"], l_json["mistake"], l_json["solution"],
+                        memory_system=self.context.memory_system
+                    )
                     pretty_log("Auto-Learning", "New lesson captured automatically", icon=Icons.IDEA)
         except Exception as e:
             logger.error(f"Post-mortem failed: {e}")
@@ -312,12 +348,8 @@ class GhostAgent:
                         pretty_log("Memory Context", f"Retrieved for: {last_user_content}", icon=Icons.BRAIN_CTX)
                         fetched_mem_context = f"### MEMORY CONTEXT:\n{mem_context}\n\n"
                         
-                fetched_playbook = ""
-                if self.context.skill_memory:
-                    playbook = await asyncio.to_thread(self.context.skill_memory.get_playbook_context, query=last_user_content, memory_system=self.context.memory_system)
-                    if playbook:
-                        fetched_playbook = f"### SKILL PLAYBOOK:\n{playbook}\n\n"
-                            
+                fetched_playbook = ""  # Now dynamically populated inside the loop
+                                        
                 messages = self.process_rolling_window(messages, self.context.args.max_context)
                 
                 final_ai_content, created_time = "", int(datetime.datetime.now().timestamp())
@@ -461,6 +493,16 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
 
                     # Proactive Context Pruning before request
                     messages = self._prune_context(messages, max_tokens=self.context.args.max_context)
+                    
+                    # --- INTENT-DRIVEN SKILL RECALL ---
+                    fetched_playbook = ""
+                    if self.context.skill_memory:
+                        skill_query = last_user_content
+                        if use_plan and not is_conversational and locals().get("required_tool", "none") not in ["none", "all"]:
+                            skill_query = f"Tool: {required_tool} - Context: {thought_content}"
+                        playbook = await asyncio.to_thread(self.context.skill_memory.get_playbook_context, query=skill_query, memory_system=self.context.memory_system)
+                        if playbook:
+                            fetched_playbook = f"### SKILL PLAYBOOK:\n{playbook}\n\n"
 
                     dynamic_state = f"### DYNAMIC SYSTEM STATE\nCURRENT TIME: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\nSCRAPBOOK:\n{scratch_data}\n\n"
                     if has_coding_intent:
@@ -469,10 +511,10 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                         dynamic_state += f"ACTIVE STRATEGY & PLAN:\nTHOUGHT: {thought_content}\nPLAN:\n{task_tree.render()}\nFOCUS TASK: {next_action_id}\n"
                         
                         if str(next_action_id).strip().lower() == "none":
-                            dynamic_state += "CRITICAL INSTRUCTION: DO NOT USE TOOLS this turn. Answer the user directly. DO NOT ECHO OR REPEAT THE PLAN IN YOUR RESPONSE.\n"
+                            dynamic_state += "CRITICAL INSTRUCTION: DO NOT USE TOOLS this turn. Answer the user directly using insights from your THOUGHT.\n"
                             force_final_response = True
                         else:
-                            dynamic_state += "CRITICAL INSTRUCTION: Execute ONLY the tool required for the FOCUS TASK. DO NOT ECHO OR REPEAT THE PLAN. DO NOT HALLUCINATE TOOL OUTPUTS.\n"
+                            dynamic_state += "CRITICAL INSTRUCTION: Execute ONLY the tool required for the FOCUS TASK. DO NOT HALLUCINATE TOOL OUTPUTS.\n"
 
                     # Bundle ALL dynamic context that changes per-request or per-turn
                     transient_injection = f"{active_persona}{fetched_playbook}{fetched_mem_context}{dynamic_state.strip()}"
@@ -521,7 +563,8 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                                     pass
                             
                             if self.context.args.smart_memory > 0.0 and last_user_content and not forget_was_called and not last_was_failure:
-                                background_tasks.add_task(self.run_smart_memory_task, f"User: {last_user_content}\nAI: {full_content}", model, self.context.args.smart_memory)
+                                recent_arc = self._get_recent_transcript(messages[-10:]) + f"AI: {full_content}"
+                                background_tasks.add_task(self.run_smart_memory_task, recent_arc, model, self.context.args.smart_memory)
                                 
                             if was_complex_task or execution_failure_count > 0:
                                 if not force_stop or "READY TO FINALIZE" in locals().get('thought_content', '').upper():
@@ -625,7 +668,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                         content = re.sub(r'(?m)^\s*(?:🔄|🟢|⏳|✅|❌|🛑|➖)\s*\[.*?\].*?\n?', '', content)
                         content = re.sub(r'(?m)^.*?\((?:IN_PROGRESS|READY|PENDING|DONE|FAILED|BLOCKED)\)\s*\n?', '', content)
                         content = re.sub(r'(?m)^\s*(?:\[)?task_\d+(?:\])?\s*\n?', '', content)
-                        content = re.sub(r'(?m)^\s*(?:FOCUS TASK|ACTIVE STRATEGY & PLAN|PLAN|THOUGHT):.*?\n?', '', content)
+                        content = re.sub(r'(?m)^\s*(?:FOCUS TASK|ACTIVE STRATEGY & PLAN|PLAN|THOUGHT):\s*', '', content)
                         
                         content = content.strip()
                     # ---------------------------------------------------------
@@ -655,7 +698,8 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                             continue
 
                         if self.context.args.smart_memory > 0.0 and last_user_content and not forget_was_called and not last_was_failure:
-                            background_tasks.add_task(self.run_smart_memory_task, f"User: {last_user_content}\nAI: {final_ai_content}", model, self.context.args.smart_memory)
+                            recent_arc = self._get_recent_transcript(messages[-10:]) + f"AI: {final_ai_content}"
+                            background_tasks.add_task(self.run_smart_memory_task, recent_arc, model, self.context.args.smart_memory)
                         break
                         
                     messages.append(msg)
@@ -762,7 +806,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                             fname, tool_id, a_hash = tool_call_metadata[i]
                             str_res = str(result).replace("\r", "") if not isinstance(result, Exception) else f"Error: {str(result)}"
                             
-                            if len(str_res) > 4000 and fname not in ["file_system", "recall", "deep_research", "web_search", "knowledge_base"]:
+                            if len(str_res) > 4000 and fname not in ["file_system", "recall", "deep_research", "web_search", "knowledge_base", "postgres_admin"]:
                                 payload = {
                                     "model": model,
                                     "messages": [{"role": "user", "content": f"The user asked: '{last_user_content}'. Summarize this tool output. If it contains facts relevant to the user, extract them. If it is a script error, state the root cause. Output: {str_res[:15000]}"}],
@@ -854,7 +898,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                 final_ai_content = re.sub(r'(?m)^\s*(?:🔄|🟢|⏳|✅|❌|🛑|➖)\s*\[.*?\].*?\n?', '', final_ai_content)
                 final_ai_content = re.sub(r'(?m)^.*?\((?:IN_PROGRESS|READY|PENDING|DONE|FAILED|BLOCKED)\)\s*\n?', '', final_ai_content)
                 final_ai_content = re.sub(r'(?m)^\s*(?:\[)?task_\d+(?:\])?\s*\n?', '', final_ai_content)
-                final_ai_content = re.sub(r'(?m)^\s*(?:FOCUS TASK|ACTIVE STRATEGY & PLAN|PLAN|THOUGHT):.*?\n?', '', final_ai_content)
+                final_ai_content = re.sub(r'(?m)^\s*(?:FOCUS TASK|ACTIVE STRATEGY & PLAN|PLAN|THOUGHT):\s*', '', final_ai_content)
                 final_ai_content = final_ai_content.strip()
 
                 # --- THE "PERFECT IT" PROTOCOL INJECTION ---
@@ -900,7 +944,10 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
 
                 # --- AUTOMATED POST-MORTEM (AUTO-LEARNING) ---
                 if was_complex_task or execution_failure_count > 0:
-                    if not force_stop or "READY TO FINALIZE" in thought_content.upper():
+                    is_complete_failure = (execution_failure_count >= 3)
+                    is_valid_success = (not force_stop or "READY TO FINALIZE" in thought_content.upper())
+                    
+                    if is_valid_success or is_complete_failure:
                         if background_tasks:
                             background_tasks.add_task(self._execute_post_mortem, last_user_content, list(tools_run_this_turn), final_ai_content, model)
 

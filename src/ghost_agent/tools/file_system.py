@@ -42,7 +42,7 @@ async def tool_read_file(filename: str, sandbox_dir: Path):
     
     # GUARD 2: PDF files must be handled by the knowledge base
     if str(filename).lower().endswith(".pdf"):
-        return f"Error: '{filename}' is a PDF. You cannot use read_file on PDFs. Use file_system(operation='read_chunked', filename='{filename}') to read it page-by-page, or knowledge_base(action='recall', content='query') or knowledge_base(action='ingest_document') instead."
+        return f"Error: '{filename}' is a PDF. You cannot use read_file on PDFs. To permanently index it into your vector memory, use knowledge_base(action='ingest_document', content='{filename}'). To just read a specific page into your immediate context, use file_system(operation='read_chunked', path='{filename}', page=1)."
 
     try:
         path = _get_safe_path(sandbox_dir, filename)
@@ -54,6 +54,45 @@ async def tool_read_file(filename: str, sandbox_dir: Path):
             
         content = await asyncio.to_thread(path.read_text)
         return content
+    except ValueError as ve: return str(ve)
+    except Exception as e: return f"Error: {e}"
+
+async def tool_replace_text(filename: str, old_text: str, new_text: str, sandbox_dir: Path):
+    pretty_log("File Replace", filename, icon=Icons.TOOL_FILE_W)
+    if not old_text: return "Error: You must specify the exact 'content' to be replaced."
+    if new_text is None: return "Error: You must specify 'replace_with' (can be an empty string to delete)."
+    
+    try:
+        path = _get_safe_path(sandbox_dir, filename)
+        if not path.exists(): return f"Error: '{filename}' not found."
+        
+        file_content = await asyncio.to_thread(path.read_text)
+        
+        # 1. Exact match attempt
+        if old_text in file_content:
+            occurrences = file_content.count(old_text)
+            new_file_content = file_content.replace(old_text, new_text)
+            await asyncio.to_thread(path.write_text, new_file_content)
+            msg = f"SUCCESS: Exact match found and replaced in '{filename}'."
+            if occurrences > 1: msg += f" WARNING: Replaced {occurrences} identical occurrences."
+            return msg
+            
+        # 2. Heuristic match (ignore leading/trailing whitespace & newlines)
+        # LLMs often mess up the exact indentation of the search block
+        import re
+        normalized_old = re.escape(old_text.strip())
+        flexible_old = re.sub(r'\\([ \t]+)', r'[ \t]+', normalized_old)
+        
+        matches = re.findall(flexible_old, file_content)
+        if len(matches) == 1:
+            new_file_content = file_content.replace(matches[0], new_text.strip())
+            await asyncio.to_thread(path.write_text, new_file_content)
+            return f"SUCCESS: Flexible match found and replaced in '{filename}'."
+        elif len(matches) > 1:
+            return "Error: Multiple instances of this text block found. Please provide a larger, more unique block of code in 'content' to ensure we replace the correct one."
+            
+        return "Error: The exact search block was NOT found in the file. Ensure you copy the old code exactly as it appears in the file, including indentation and comments."
+        
     except ValueError as ve: return str(ve)
     except Exception as e: return f"Error: {e}"
 
@@ -79,13 +118,48 @@ async def tool_write_file(filename: str, content: Any, sandbox_dir: Path):
     except Exception as e: return f"Error: {e}"
 
 async def tool_list_files(sandbox_dir: Path, memory_system=None):
-    pretty_log("Sandbox Tree", "Listing workspace files", icon=Icons.TOOL_FILE_I)
+    pretty_log("Sandbox Tree", "Listing workspace files & mapping repo", icon=Icons.TOOL_FILE_I)
     try:
-        # Shallow listing like Granite4 for high performance
-        files = os.listdir(sandbox_dir)
-        tree = [f"  {f}" if (sandbox_dir / f).is_file() else f"  {f}/" for f in sorted(files) if not f.startswith(".")]
-        
-        sandbox_tree = "\n".join(tree) if tree else "[Empty]"
+        def _build_map():
+            import ast
+            import os
+            tree_lines = []
+            
+            for root, dirs, files in os.walk(sandbox_dir):
+                # Ignore hidden and virtual env directories
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['__pycache__', 'node_modules', 'venv', 'env']]
+                
+                rel_root = Path(root).relative_to(sandbox_dir)
+                root_prefix = "" if rel_root == Path(".") else f"{rel_root}/"
+                
+                for f in sorted(files):
+                    if f.startswith('.'): continue
+                    path = Path(root) / f
+                    line = f"  {root_prefix}{f}"
+                    
+                    # --- REPO MAP: Extract AST Signatures for Python files ---
+                    if f.endswith('.py') and path.stat().st_size < 100000:
+                        try:
+                            code = path.read_text(errors='ignore')
+                            parsed = ast.parse(code)
+                            sigs = []
+                            for node in parsed.body:
+                                if isinstance(node, ast.FunctionDef):
+                                    sigs.append(f"def {node.name}()")
+                                elif isinstance(node, ast.ClassDef):
+                                    sigs.append(f"class {node.name}")
+                            if sigs:
+                                line += f"  [{', '.join(sigs[:5])}{'...' if len(sigs)>5 else ''}]"
+                        except Exception:
+                            pass
+                    tree_lines.append(line)
+                    
+            return "\n".join(tree_lines[:200]) if tree_lines else "[Empty]"
+            
+        sandbox_tree = await asyncio.to_thread(_build_map)
+        if len(sandbox_tree.splitlines()) >= 200:
+            sandbox_tree += "\n  ... [Truncated for length]"
+            
         return f"CURRENT SANDBOX DIRECTORY STRUCTURE:\n{sandbox_tree}\n\n(Use these filenames for all file tools)"
     except Exception as e: return f"Error scanning sandbox: {e}"
 
@@ -365,6 +439,7 @@ async def tool_file_system(operation: str, sandbox_dir: Path, path: str = None, 
         return await tool_read_document_chunked(target_path, sandbox_dir, page=page, chunk_size=chunk_size)
     elif operation == "inspect": return await tool_inspect_file(target_path, sandbox_dir)
     elif operation == "write": return await tool_write_file(target_path, final_content, sandbox_dir)
+    elif operation == "replace": return await tool_replace_text(target_path, final_content, kwargs.get("replace_with", ""), sandbox_dir)
     
     if operation in ["rename", "move"]:
         if not final_content:

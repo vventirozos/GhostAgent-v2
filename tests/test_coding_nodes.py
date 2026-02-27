@@ -112,6 +112,7 @@ async def test_stream_chat_completion_uses_coding_node(mock_coding_nodes):
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_response.aiter_lines = mock_aiter_lines
+    mock_response.aclose = AsyncMock()
     
     client.coding_clients[0]["client"].build_request = MagicMock()
     client.coding_clients[0]["client"].send = AsyncMock(return_value=mock_response)

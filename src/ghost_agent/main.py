@@ -53,6 +53,29 @@ logger = logging.getLogger("GhostAgent")
 GLOBAL_CONTEXT = None
 GLOBAL_AGENT = None
 
+async def idle_dream_watchdog():
+    """Triggers Dream Mode when the user is away from the keyboard for 15 minutes."""
+    global GLOBAL_CONTEXT
+    if not GLOBAL_CONTEXT or not getattr(GLOBAL_CONTEXT, 'memory_system', None): return
+    
+    idle_secs = (datetime.datetime.now() - GLOBAL_CONTEXT.last_activity_time).total_seconds()
+    if idle_secs > 900: # 15 mins
+        try:
+            # Check if there is enough entropy to dream about to save compute
+            res = await asyncio.to_thread(GLOBAL_CONTEXT.memory_system.collection.get, where={"type": "auto"}, limit=5)
+            if res and len(res.get('ids', [])) >= 3:
+                import random
+                # 20% chance to trigger every 5 minutes (prevents spamming and mimics biological cycles)
+                if random.random() < 0.20:
+                    from .core.dream import Dreamer
+                    pretty_log("Biological Hook", "Agent is idle. Entering spontaneous REM cycle...", icon=Icons.BRAIN_THINK)
+                    dreamer = Dreamer(GLOBAL_CONTEXT)
+                    await dreamer.dream(model_name=getattr(GLOBAL_CONTEXT.args, 'model', 'default'))
+                    # Reset activity time so it doesn't loop continuously
+                    GLOBAL_CONTEXT.last_activity_time = datetime.datetime.now()
+        except Exception as e:
+            logger.error(f"Idle dream failed: {e}")
+
 async def proactive_runner(task_id, prompt):
     """
     Top-level function for scheduled tasks.
@@ -210,8 +233,16 @@ async def lifespan(app):
     tasks.run_proactive_task_fn = proactive_runner
 
     try:
+        # Add the biological sleep monitor
+        context.scheduler.add_job(
+            idle_dream_watchdog,
+            'interval',
+            minutes=5,
+            id="idle_dream_monitor",
+            replace_existing=True
+        )
         context.scheduler.start()
-        pretty_log("Scheduler Ready", "Jobs loaded", icon=Icons.BRAIN_PLAN)
+        pretty_log("Scheduler Ready", "Jobs loaded (Idle Watchdog Active)", icon=Icons.BRAIN_PLAN)
     except Exception as e:
         pretty_log("Scheduler Error", str(e), level="ERROR", icon=Icons.FAIL)
 

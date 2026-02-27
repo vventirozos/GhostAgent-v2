@@ -47,7 +47,7 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["read", "read_chunked", "inspect", "search", "list_files", "write", "download", "copy", "rename", "move", "delete"],
+                        "enum": ["read", "read_chunked", "inspect", "search", "list_files", "write", "replace", "download", "copy", "rename", "move", "delete"],
                         "description": "The exact operation to perform."
                     },
                     "path": {
@@ -64,7 +64,11 @@ TOOL_DEFINITIONS = [
                     },
                     "content": {
                         "type": "string",
-                        "description": "For 'write': text to write. For 'search': exact pattern. For 'rename' or 'move': the NEW filename or path."
+                        "description": "For 'write': full text to write. For 'search': exact pattern. For 'rename/move': NEW filename. For 'replace': The exact old code block to remove."
+                    },
+                    "replace_with": {
+                        "type": "string",
+                        "description": "MANDATORY ONLY FOR 'replace' operation: The new code/text that will take the place of the 'content' block."
                     },
                     "url": {
                         "type": "string",
@@ -75,9 +79,9 @@ TOOL_DEFINITIONS = [
             }
         }
     },
-    {"type": "function", "function": {"name": "knowledge_base", "description": "Unified memory manager. ALWAYS use this to ingest_document (PDFs/Text), forget, list_docs, or reset_all. Do NOT write Python scripts to read PDFs or ingest files.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["insert_fact", "ingest_document", "forget", "list_docs", "reset_all"]}, "content": {"type": "string", "description": "The target argument. For 'ingest_document', this MUST be the FILENAME or a URL. For 'insert_fact', this is the raw text to memorize. For 'forget', this is the topic."}}, "required": ["action"]}}},
-    {"type": "function", "function": {"name": "recall", "description": "Search long-term vector memory for general semantic concepts or past conversations. WARNING: This cannot find exact quotes or specific lines. You MUST use file_system operation='search' for exact text matching.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
-    {"type": "function", "function": {"name": "execute", "description": "Run Python or Shell code. USE THIS ONLY AS A LAST RESORT for custom math, logic, or formatting. DO NOT use this to download files (use file_system), scrape the web, or manage memory. WARNING: Native tools (file_system, knowledge_base) CANNOT be imported in Python. ALWAYS print results.", "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "The name of the file to execute. MUST end in .py, .sh, or .js"}, "content": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}, "description": "Optional command line arguments to safely pass to the script."}}, "required": ["filename", "content"]}}},
+    {"type": "function", "function": {"name": "knowledge_base", "description": "Unified memory manager. ALWAYS use this to ingest_document (PDFs/Text), forget, list_docs, or reset_all. Do NOT write Python scripts to read PDFs or ingest files.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["insert_fact", "ingest_document", "forget", "list_docs", "reset_all"]}, "content": {"type": "string", "description": "The target argument. For 'ingest_document', this MUST be a LOCAL FILENAME or a web HTML URL. (Do NOT pass PDF URLs directly - download them via file_system first). For 'insert_fact', this is the raw text to memorize. For 'forget', this is the topic."}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "recall", "description": "Search the vector database for facts and answers from INGESTED DOCUMENTS, PDFs, and past conversations. ALWAYS use this FIRST when the user asks a question about an ingested file. WARNING: This retrieves semantic chunks; use file_system operation='search' if you need an exact line match.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "The specific question or search query."}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "execute", "description": "Run Python or Shell code. USE THIS ONLY AS A LAST RESORT for custom math, logic, or formatting. DO NOT use this to download files (use file_system), scrape the web, or manage memory. WARNING: Native tools (file_system, knowledge_base) CANNOT be imported in Python. ALWAYS print results.", "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "The name of the file to execute. MUST end in .py, .sh, or .js"}, "content": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}, "description": "Optional command line arguments to safely pass to the script."}, "stateful": {"type": "boolean", "description": "If true, Python variables/dataframes/models are saved and automatically loaded into memory for your next execution. Acts like a Jupyter Notebook cell."}}, "required": ["filename", "content"]}}},
     {"type": "function", "function": {"name": "learn_skill", "description": "MANDATORY when you solve a complex bug or task after initial failure. Save the lesson so you don't repeat the mistake.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}, "mistake": {"type": "string"}, "solution": {"type": "string"}}, "required": ["task", "mistake", "solution"]}}},
     {"type": "function", "function": {"name": "web_search", "description": "Search the internet (Anonymous via Tor).", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "deep_research", "description": "Performs deep analysis by searching multiple sources and synthesizing a report.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},

@@ -10,7 +10,7 @@ from src.ghost_agent.tools.registry import TOOL_DEFINITIONS
 def test_system_prompt_json_tools_constraint():
     """Verify that SYSTEM_PROMPT mandates JSON tools and does not use negative imports."""
     assert "DO NOT manually type `<tool_call>`" in SYSTEM_PROMPT
-    assert "The native tools (file_system, knowledge_base, etc.) are triggered via JSON" in SYSTEM_PROMPT
+    assert "The native tools (file_system, knowledge_base, etc.) are triggered via the native tool_calls API, NOT by typing raw JSON" in SYSTEM_PROMPT
     # Guarantee we removed the previous hallucination-causing suggestion
     assert "import knowledge_base" not in SYSTEM_PROMPT
     
@@ -20,6 +20,12 @@ def test_code_system_prompt_positive_isolation():
     assert "Do NOT write Python scripts for tasks that can be handled natively" in CODE_SYSTEM_PROMPT
     assert "SANDBOX ISOLATION:" in CODE_SYSTEM_PROMPT
     assert "You cannot trigger agent tools from within Python" in CODE_SYSTEM_PROMPT
+    
+def test_code_system_prompt_stateful():
+    """Verify CODE_SYSTEM_PROMPT explicitly advertises stateful execution."""
+    assert "STATEFUL EXECUTION:" in CODE_SYSTEM_PROMPT
+    assert "If you are doing Exploratory Data Analysis" in CODE_SYSTEM_PROMPT
+    assert "persistent Jupyter-like REPL" in CODE_SYSTEM_PROMPT
     
 def test_planning_system_prompt_tool_binding():
     """Verify the Planner explicitly performs Tool Binding."""
@@ -92,8 +98,19 @@ def test_tool_schemas_and_properties():
     assert ex_props["args"]["type"] == "array"
     assert "Optional command line arguments" in ex_props["args"]["description"]
     assert "MUST end in .py, .sh, or .js" in ex_props["filename"]["description"]
+    assert "stateful" in ex_props, "execute should have stateful property"
+    assert ex_props["stateful"]["type"] == "boolean"
+    assert "automatically loaded into memory" in ex_props["stateful"]["description"]
     
     # 6. manage_tasks
     mt_props = manage_tasks["function"]["parameters"]["properties"]
     assert "interval:seconds" in mt_props["cron_expression"]["description"]
     assert "required for 'create'" in mt_props["task_name"]["description"]
+
+def test_system_prompt_rag_routing():
+    """Verify that SYSTEM_PROMPT explicitly routes document questions to recall tool"""
+    assert "KNOWLEDGE & RAG" in SYSTEM_PROMPT
+    
+    recall_tool = next(t for t in TOOL_DEFINITIONS if t["function"]["name"] == "recall")
+    assert "INGESTED DOCUMENTS" in recall_tool["function"]["description"]
+    assert "ALWAYS use this FIRST" in recall_tool["function"]["description"]

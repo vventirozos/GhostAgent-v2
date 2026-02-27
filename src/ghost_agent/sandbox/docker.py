@@ -171,7 +171,7 @@ class DockerSandbox:
                 "pip install --no-cache-dir "
                 "numpy pandas scipy matplotlib seaborn "
                 "scikit-learn yfinance beautifulsoup4 networkx requests "
-                "pylint black mypy bandit "
+                "pylint black mypy bandit dill "
                 "psycopg2-binary asyncpg sqlalchemy tabulate sqlglot"
             )
             code, out = self.container.exec_run(install_cmd, environment=env_vars)

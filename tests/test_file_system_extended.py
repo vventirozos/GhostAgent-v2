@@ -32,11 +32,12 @@ async def test_list_files(temp_dirs):
     (sandbox / "a.txt").touch()
     (sandbox / "b.log").touch()
     (sandbox / "subdir").mkdir()
+    (sandbox / "subdir" / "c.csv").touch()
     
     listing = await tool_list_files(sandbox_dir=sandbox)
     assert "a.txt" in listing
     assert "b.log" in listing
-    assert "subdir" in listing
+    assert "subdir/c.csv" in listing
 
 @pytest.mark.asyncio
 async def test_file_search(temp_dirs):

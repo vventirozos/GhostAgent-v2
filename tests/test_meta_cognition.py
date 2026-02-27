@@ -30,8 +30,8 @@ async def test_smart_memory_thresholds(mock_context):
     
     # Assert profile memory was updated
     mock_context.profile_memory.update.assert_called_with("coding", "lang", "Python")
-    # Assert memory system was also updated (smart_update)
-    mock_context.memory_system.smart_update.assert_called()
+    # Assert memory system was also updated (add)
+    mock_context.memory_system.add.assert_called()
 
 @pytest.mark.asyncio
 async def test_smart_memory_discard(mock_context):
@@ -49,8 +49,8 @@ async def test_smart_memory_discard(mock_context):
     
     # Assert profile memory was NOT updated
     mock_context.profile_memory.update.assert_not_called()
-    # Assert memory system smart_update was NOT called (impl details: if score < selectivity)
-    mock_context.memory_system.smart_update.assert_not_called()
+    # Assert memory system add was NOT called (impl details: if score < selectivity)
+    mock_context.memory_system.add.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_dream_heuristics(mock_context):

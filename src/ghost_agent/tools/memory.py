@@ -72,9 +72,12 @@ async def tool_gain_knowledge(filename: str, sandbox_dir: Path, memory_system):
     if filename in current_library:
         return f"Skipped: '{filename}' is already in KB."
 
-    full_text = ""
     is_web = filename.lower().startswith("http://") or filename.lower().startswith("https://")
+    
+    if is_web and filename.lower().split("?")[0].endswith(".pdf"):
+        return "Error: You cannot directly ingest a PDF URL. If you already downloaded it to the sandbox, pass the LOCAL FILENAME (e.g. 'document.pdf') instead of the URL. If you haven't downloaded it, use file_system(operation='download') first."
 
+    full_text = ""
     if is_web:
         pretty_log("Fetching URL", filename, icon=Icons.TOOL_DOWN)
         try:
@@ -88,7 +91,14 @@ async def tool_gain_knowledge(filename: str, sandbox_dir: Path, memory_system):
         if not file_path.exists():
             # Try a case-insensitive match or search for the filename in the sandbox
             try:
-                all_files = list(sandbox_dir.rglob("*"))
+                import os
+                # Use a safe os.walk instead of unbounded rglob
+                all_files = []
+                for root_dir, dirs, fnames in os.walk(sandbox_dir):
+                    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', 'venv', '__pycache__', 'env']]
+                    for f in fnames:
+                        if not f.startswith('.'):
+                            all_files.append(Path(root_dir) / f)
                 
                 # Priority 1: Exact name match (case-insensitive)
                 matches = [f for f in all_files if f.name.lower() == filename.lower()]
@@ -107,32 +117,32 @@ async def tool_gain_knowledge(filename: str, sandbox_dir: Path, memory_system):
                     filename = str(file_path.relative_to(sandbox_dir))
                     pretty_log("KB Auto-Resolve", filename, icon=Icons.OK)
                 else:
-                    return f"Error: File '{filename}' not found."
+                    return f"Error: File '{filename}' not found. Check list_files to see the exact name."
             except:
                 return f"Error: File '{filename}' not found."
+                
+        try:
+            def _extract_text():
+                extracted = ""
+                if filename.lower().endswith(".pdf"):
+                    import fitz
+                    doc = fitz.open(file_path)
+                    for page in doc:
+                        text = page.get_text()
+                        if text: extracted += text + "\n"
+                    doc.close()
+                else:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        extracted = f.read()
+                return extracted
+            full_text = await asyncio.to_thread(_extract_text)
+        except Exception as e: return f"Disk Error: {str(e)}"
 
-    full_text = ""
-    try:
-        def _extract_text():
-            extracted = ""
-            if filename.lower().endswith(".pdf"):
-                doc = fitz.open(file_path)
-                for page in doc:
-                    text = page.get_text()
-                    if text: extracted += text + "\n"
-                doc.close()
-            else:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    extracted = f.read()
-            return extracted
-
-        full_text = await asyncio.to_thread(_extract_text)
-    except Exception as e: return f"Disk Error: {str(e)}"
-
-    if not full_text.strip(): return "Error: Extracted text is empty."
+    if not full_text or not full_text.strip(): return "Error: Extracted text is empty."
 
     pretty_log("KB Split", f"{len(full_text)} chars", icon=Icons.MEM_SPLIT)
-    chunks = recursive_split_text(full_text, chunk_size=1000, chunk_overlap=100)
+    # Reduced chunk size to 600 to prevent silent truncation by all-MiniLM-L6-v2's 256 token limit
+    chunks = recursive_split_text(full_text, chunk_size=600, chunk_overlap=100)
     if not chunks: return "Error: No chunks created."
 
     pretty_log("KB Embed", f"{len(chunks)} fragments", icon=Icons.MEM_EMBED)
@@ -162,16 +172,15 @@ async def tool_recall(query: str, memory_system, **kwargs):
         text = res.get('text', '')
         m_type = res.get('metadata', {}).get('type', 'auto')
         
-        # TIGHTER THRESHOLDS FOR RECALL TOOL
-        if score < 0.6: relevance = "HIGH"
-        elif score < 0.9: relevance = "MEDIUM"
+        # RAG-TUNED THRESHOLDS FOR ASYMMETRIC SEARCH
+        if score < 0.8: relevance = "HIGH"
+        elif score < 1.15: relevance = "MEDIUM"
         else: relevance = "LOW"
         
         pretty_log("Memory Match", f"[{relevance}] {score:.2f} | {source}", icon=Icons.MEM_MATCH)
 
-        # 1.1 is a safe upper bound for "actual relevance" 
-        # while still filtering out complete noise (which is usually > 1.25)
-        if score < 1.1:
+        # 1.35 is a realistic upper bound for short queries against long chunks using L2 distance
+        if score < 1.35:
             valid_chunks.append(f"SOURCE: {source}\nCONTENT: {text}")
 
     if valid_chunks:

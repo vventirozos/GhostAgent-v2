@@ -172,6 +172,14 @@ async def catch_all(request: Request, path: str):
             request.method, url, headers=headers, content=request.stream()
         )
         r = await agent.context.llm_client.http_client.send(req, stream=True)
-        return StreamingResponse(r.aiter_bytes(), status_code=r.status_code, media_type=r.headers.get("content-type"))
+        
+        async def stream_generator():
+            try:
+                async for chunk in r.aiter_bytes():
+                    yield chunk
+            finally:
+                await r.aclose()
+                
+        return StreamingResponse(stream_generator(), status_code=r.status_code, media_type=r.headers.get("content-type"))
     except Exception as e:
         return JSONResponse({"error": f"Proxy Error: {e}"}, 502)

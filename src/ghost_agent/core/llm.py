@@ -408,9 +408,12 @@ class LLMClient:
                 resp = await client_to_use.send(req, stream=True)
                 resp.raise_for_status()
                 
-                async for chunk in resp.aiter_lines():
-                    if chunk:
-                        yield f"{chunk}\n\n".encode('utf-8')
+                try:
+                    async for chunk in resp.aiter_lines():
+                        if chunk:
+                            yield f"{chunk}\n\n".encode('utf-8')
+                finally:
+                    await resp.aclose()
                 return
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ConnectError) as e:
                 if attempt < 9:
