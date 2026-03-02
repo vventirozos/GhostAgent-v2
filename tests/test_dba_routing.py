@@ -54,9 +54,8 @@ async def test_dba_persona_activation(mock_context):
     assert messages[0]["role"] == "system"
     assert "You are Ghost" in messages[0]["content"]
     
-    # Specialized persona should be in the LAST message (trailing system injection)
+    # Specialized persona should be in the LAST message (appended)
     last_msg = messages[-1]
-    assert last_msg["role"] == "system"
     assert "Ghost Principal PostgreSQL Administrator" in last_msg["content"]
     assert "DBA ENGINEERING STANDARDS" in last_msg["content"]
 
@@ -79,9 +78,8 @@ async def test_python_persona_activation(mock_context):
     payload = call_args[0][0]
     messages = payload["messages"]
     
-    # Specialized persona should be in the LAST message (trailing system injection)
+    # Specialized persona should be in the LAST message (appended)
     last_msg = messages[-1]
-    assert last_msg["role"] == "system"
     assert "Ghost Advanced Engineering Subsystem" in last_msg["content"]
     assert "Ghost Principal PostgreSQL Administrator" not in last_msg["content"]
 
@@ -108,9 +106,8 @@ async def test_default_persona_activation(mock_context):
     assert messages[0]["role"] == "system"
     assert "You are Ghost" in messages[0]["content"]
     
-    # Last message should still be the transient system injection, but without specialized persona
+    # Specialized persona should be in the LAST message (appended)
     last_msg = messages[-1]
-    assert last_msg["role"] == "system"
     assert "Ghost Principal PostgreSQL Administrator" not in last_msg["content"]
     assert "Ghost Advanced Engineering Subsystem" not in last_msg["content"]
     assert "### DYNAMIC SYSTEM STATE" in last_msg["content"]

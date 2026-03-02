@@ -245,11 +245,12 @@ class GhostAgent:
             if l_content and "null" not in l_content.lower():
                 l_json = extract_json_from_text(l_content)
                 if all(k in l_json for k in ["task", "mistake", "solution"]):
-                    await asyncio.to_thread(
-                        self.context.skill_memory.learn_lesson,
-                        l_json["task"], l_json["mistake"], l_json["solution"],
-                        memory_system=self.context.memory_system
-                    )
+                    if getattr(self.context, 'skill_memory', None):
+                        await asyncio.to_thread(
+                            self.context.skill_memory.learn_lesson,
+                            l_json["task"], l_json["mistake"], l_json["solution"],
+                            memory_system=self.context.memory_system
+                        )
                     pretty_log("Auto-Learning", "New lesson captured automatically", icon=Icons.IDEA)
         except Exception as e:
             logger.error(f"Post-mortem failed: {e}")
@@ -272,14 +273,14 @@ class GhostAgent:
                 last_user_content = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
                 lc = last_user_content.lower()
                 
-                coding_keywords = [r"\bpython\b", r"\bbash\b", r"\bsh\b", r"\bscript\b", r"\bcode\b", r"\bdef\b", r"\bimport\b"]
-                coding_actions = [r"\bwrite\b", r"\brun\b", r"\bexecute\b", r"\bdebug\b", r"\bfix\b", r"\bcreate\b", r"\bgenerate\b", r"\bcount\b", r"\bcalculate\b", r"\banalyze\b", r"\bscrape\b", r"\bplot\b", r"\bgraph\b"]
+                coding_keywords = [r"\bpython\b", r"\bbash\b", r"\bsh\b", r"\bscript\b", r"\bcode\b", r"\bdef\b", r"\bimport\b", r"\bhtml\b", r"\bcss\b", r"\bjs\b", r"\bjavascript\b", r"\btypescript\b", r"\breact\b", r"\bweb\b", r"\bfrontend\b"]
+                coding_actions = [r"\bwrite\b", r"\brun\b", r"\bexecute\b", r"\bdebug\b", r"\bfix\b", r"\bcreate\b", r"\bgenerate\b", r"\bcount\b", r"\bcalculate\b", r"\banalyze\b", r"\bscrape\b", r"\bplot\b", r"\bgraph\b", r"\bbuild\b", r"\bdevelop\b"]
                 has_coding_intent = False
                 
                 if any(re.search(k, lc) for k in coding_keywords):
                     if any(re.search(a, lc) for a in coding_actions): 
                         has_coding_intent = True
-                if ".py" in lc or re.search(r'\bscript\b', lc): 
+                if any(ext in lc for ext in [".py", ".js", ".html", ".css", ".ts", ".tsx", ".jsx", ".sh"]) or re.search(r'\bscript\b', lc): 
                     has_coding_intent = True
                 
                 dba_keywords = [r"\bsql\b", r"\bpostgres\b", r"\bpostgresql\b", r"\bpsql\b", r"\bdatabase\b", r"\bpg_stat\b", r"\bexplain analyze\b", r"\bquery\b", r"\bcte\b", r"\brdbms\b", r"\bdba\b", r"\bschema\b", r"\bvacuum\b", r"\bmvcc\b"]
@@ -305,11 +306,11 @@ class GhostAgent:
                 if has_dba_intent and not is_meta_task:
                     current_temp = 0.15
                     pretty_log("Mode Switch", "Ghost PostgreSQL DBA Activated", icon=Icons.MODE_GHOST)
-                    active_persona = f"### SPECIALIST SUBSYSTEM ACTIVATED\n{DBA_SYSTEM_PROMPT.replace('{{PROFILE}}', profile_context)}\n\n"
+                    active_persona = f"{DBA_SYSTEM_PROMPT.replace('{{PROFILE}}', profile_context)}\n\n"
                 elif has_coding_intent:
                     current_temp = 0.2
                     pretty_log("Mode Switch", "Ghost Python Specialist Activated", icon=Icons.MODE_GHOST)
-                    active_persona = f"### SPECIALIST SUBSYSTEM ACTIVATED\n{CODE_SYSTEM_PROMPT.replace('{{PROFILE}}', profile_context)}\n\n"
+                    active_persona = f"{CODE_SYSTEM_PROMPT.replace('{{PROFILE}}', profile_context)}\n\n"
                 else:
                     current_temp = self.context.args.temperature
 
@@ -373,7 +374,7 @@ class GhostAgent:
                     if turn > 2: was_complex_task = True
                     if force_stop: break
                     
-                    scratch_data = self.context.scratchpad.list_all() if hasattr(self.context, 'scratchpad') else "None."
+                    scratch_data = self.context.scratchpad.list_all() if getattr(self.context, 'scratchpad', None) else "None."
                     if has_coding_intent:
                         if self.context.cached_sandbox_state is None:
                             from ..tools.file_system import tool_list_files
@@ -431,8 +432,7 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
 """
                         planner_messages = [
                             {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
-                            {"role": "user", "content": f"### RECENT CONVERSATION:\n{recent_transcript}"},
-                            {"role": "system", "content": planner_transient.strip()}
+                            {"role": "user", "content": f"### RECENT CONVERSATION:\n{recent_transcript}\n\n{planner_transient.strip()}"}
                         ]
                         
                         planning_payload = {
@@ -520,8 +520,12 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                     transient_injection = f"{active_persona}{fetched_playbook}{fetched_mem_context}{dynamic_state.strip()}"
                     
                     req_messages = [m.copy() for m in messages]
-                    # Append transient state as a trailing system message to perfectly preserve historical KV Cache
-                    req_messages.append({"role": "system", "content": transient_injection})
+                    # Append transient state to the LAST message (user or tool) to perfectly preserve historical KV Cache
+                    # and prevent ChatML prompt bleed (where the LLM echoes a trailing system prompt).
+                    if req_messages:
+                        req_messages[-1]["content"] += f"\n\n[SYSTEM STATE UPDATE]\n{transient_injection}"
+                    else:
+                        req_messages.append({"role": "user", "content": f"[SYSTEM STATE UPDATE]\n{transient_injection}"})
                     payload = {
                         "model": model, 
                         "messages": req_messages, 
@@ -564,7 +568,8 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
                             
                             if self.context.args.smart_memory > 0.0 and last_user_content and not forget_was_called and not last_was_failure:
                                 recent_arc = self._get_recent_transcript(messages[-10:]) + f"AI: {full_content}"
-                                background_tasks.add_task(self.run_smart_memory_task, recent_arc, model, self.context.args.smart_memory)
+                                if background_tasks is not None:
+                                    background_tasks.add_task(self.run_smart_memory_task, recent_arc, model, self.context.args.smart_memory)
                                 
                             if was_complex_task or execution_failure_count > 0:
                                 if not force_stop or "READY TO FINALIZE" in locals().get('thought_content', '').upper():
@@ -699,7 +704,8 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
 
                         if self.context.args.smart_memory > 0.0 and last_user_content and not forget_was_called and not last_was_failure:
                             recent_arc = self._get_recent_transcript(messages[-10:]) + f"AI: {final_ai_content}"
-                            background_tasks.add_task(self.run_smart_memory_task, recent_arc, model, self.context.args.smart_memory)
+                            if background_tasks is not None:
+                                background_tasks.add_task(self.run_smart_memory_task, recent_arc, model, self.context.args.smart_memory)
                         break
                         
                     messages.append(msg)
@@ -777,7 +783,8 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
 
                                 
                                 pretty_log("Red Team Audit", "Reviewing complex code for destructive risk...", icon=Icons.SHIELD)
-                                is_approved, revised_code, critique = await self._run_critic_check(code_content, last_user_content, model)
+                                target_filename = t_args.get("filename", "script.py")
+                                is_approved, revised_code, critique = await self._run_critic_check(code_content, last_user_content, model, target_filename)
                                 
                                 if not is_approved and revised_code:
                                     pretty_log("Red Team Intervention", "Code patched for safety/logic.", icon=Icons.SHIELD)
@@ -888,6 +895,16 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
 
                 # --- FINAL OUTPUT SCRUBBER ---
                 # Apply scrubbers FIRST so we don't accidentally scrub our own manual fallback injections
+                bleed_markers = [
+                    "# Tools", "<tools>", "CRITICAL INSTRUCTION:", "You may call one or more functions", 
+                    '{"type": "function"', "SPECIALIST SUBSYSTEM ACTIVATED", "ENGINEERING STANDARDS", 
+                    "DYNAMIC SYSTEM STATE", "[SYSTEM STATE UPDATE]"
+                ]
+                for bleed_marker in bleed_markers:
+                    if bleed_marker in final_ai_content:
+                        final_ai_content = final_ai_content.split(bleed_marker)[0]
+                
+                # Manual Final Check for 100% pure block outputs (already rendered by the Sandbox, redundant to say here)manual fallback injections
                 for bleed_marker in ["# Tools", "<tools>", "CRITICAL INSTRUCTION:", "You may call one or more functions", '{"type": "function"']:
                     if bleed_marker in final_ai_content:
                         final_ai_content = final_ai_content.split(bleed_marker)[0]
@@ -962,10 +979,10 @@ You are currently at TURN {turn+1}. Trust your CURRENT PLAN JSON to know what is
             pretty_log("Request Finished", special_marker="END")
             request_id_context.reset(token)
 
-    async def _run_critic_check(self, code: str, task_context: str, model: str):
+    async def _run_critic_check(self, code: str, task_context: str, model: str, filename: str = "script.py"):
         from .prompts import CRITIC_SYSTEM_PROMPT
         try:
-            prompt = f"### USER TASK:\n{task_context}\n\n### PROPOSED CODE:\n{code}"
+            prompt = f"### TARGET FILE:\n{filename}\n\n### USER TASK:\n{task_context}\n\n### PROPOSED CODE:\n{code}"
             payload = {
                 "model": model, 
                 "messages": [{"role": "system", "content": CRITIC_SYSTEM_PROMPT}, {"role": "user", "content": prompt}], 

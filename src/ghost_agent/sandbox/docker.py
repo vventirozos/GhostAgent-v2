@@ -129,6 +129,14 @@ class DockerSandbox:
                     if not is_mac:
                         run_kwargs["extra_hosts"] = {"host.docker.internal": "host-gateway"}
 
+                # Check for cached environment image for instant boot
+                try:
+                    self.client.images.get("ghost-agent-base:latest")
+                    self.image = "ghost-agent-base:latest"
+                    run_kwargs["image"] = self.image
+                except self.docker_lib.errors.ImageNotFound:
+                    pass
+
                 try:
                     self.client.images.get(self.image)
                 except self.docker_lib.errors.ImageNotFound:
@@ -181,6 +189,15 @@ class DockerSandbox:
 
                 
             self.container.exec_run("touch /root/.supercharged")
+
+            # Cache the fully installed environment for instant future startups
+            if self.image != "ghost-agent-base:latest":
+                try:
+                    pretty_log("Sandbox", "Committing fast-boot image cache...", icon=Icons.MEM_SAVE)
+                    self.container.commit(repository="ghost-agent-base", tag="latest")
+                except Exception as e:
+                    logger.warning(f"Failed to commit sandbox image cache: {e}")
+
             pretty_log("Sandbox", "Environment Ready.", icon="✅")
 
     def execute(self, cmd: str, timeout: int = 300):

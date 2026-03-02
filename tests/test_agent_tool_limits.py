@@ -63,7 +63,7 @@ async def test_tool_limits_search(agent):
         messages = planning_call_args.get("messages", [])
         system_content = ""
         for msg in messages:
-            if msg["role"] == "system":
+            if msg["role"] in ["system", "user"]:
                 system_content += msg.get("content", "")
     
         print(f"DEBUG TA: {system_content}")

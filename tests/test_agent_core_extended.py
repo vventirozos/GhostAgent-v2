@@ -239,10 +239,10 @@ async def test_context_shield_edge_summary(agent):
         
         # Check that the 3rd call to the main LLM received the condensed edge summary
         final_call = agent.context.llm_client.chat_completion.call_args_list[2]
-        # The tool response is at messages[-2] because messages[-1] is the transient system injection
-        tool_response_msg = final_call.args[0]["messages"][-2]
+        # The tool response is at messages[-1] because the transient system injection is now appended string-wise
+        tool_response_msg = final_call.args[0]["messages"][-1]
         assert tool_response_msg.get("role") == "tool"
-        assert tool_response_msg["content"] == "[EDGE CONDENSED]: Summarized successfully."
+        assert tool_response_msg["content"].startswith("[EDGE CONDENSED]: Summarized successfully.")
         
         # Check logs
         log_msgs = [str(call) for call in mock_log.call_args_list]

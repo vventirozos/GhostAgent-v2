@@ -100,3 +100,24 @@ class SkillMemory:
                 context += f"{i+1}. SITUATION: {p['task']}\n   PREVIOUS MISTAKE: {p['mistake']}\n   THE FIX: {p['solution']}\n"
             return context
         except: return ""
+
+    def get_recent_failures(self, limit: int = 5) -> str:
+        """Fetch the most recent mistakes and their tasks to generate targeted self-play scenarios."""
+        try:
+            with self._lock:
+                try:
+                    content = self.file_path.read_text()
+                    playbook = json.loads(content) if content else []
+                except:
+                    playbook = []
+            
+            if not playbook:
+                return "No recent failures recorded."
+                
+            recent_lessons = playbook[:limit]
+            context = "## RECENT MISTAKES:\n"
+            for p in recent_lessons:
+                context += f"- TASK: {p.get('task')}\n  ERROR/MISTAKE: {p.get('mistake')}\n\n"
+            return context.strip()
+        except:
+            return "Failed to load recent failures."

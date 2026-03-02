@@ -96,13 +96,13 @@ async def test_dynamic_state_trailing_system(agent):
     assert messages[0]["role"] == "system"
     assert "You are Ghost" in messages[0]["content"]
     
-    # Dynamic state should be in the LAST message (trailing system prompt)
-    assert messages[-1]["role"] == "system"
+    # Dynamic state should be in the LAST message (trailing user prompt)
+    assert messages[-1]["role"] == "user"
     assert "DYNAMIC SYSTEM STATE" in messages[-1]["content"]
     
-    # Ensure there are exactly two system prompts in the request
+    # Ensure there is exactly ONE system prompt in the request (the base one)
     system_prompts = [m for m in messages if m["role"] == "system"]
-    assert len(system_prompts) == 2
+    assert len(system_prompts) == 1
 
 @pytest.mark.asyncio
 async def test_loop_alerts_use_user_role(agent):

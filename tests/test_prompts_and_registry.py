@@ -48,11 +48,11 @@ def test_tool_registry_negative_constraints():
     
     # Execute constraints
     assert "USE THIS ONLY AS A LAST RESORT" in execute_tool["function"]["description"]
-    assert "DO NOT use this to download files (use file_system), scrape the web, or manage memory" in execute_tool["function"]["description"]
-    assert "WARNING: Native tools (file_system, knowledge_base) CANNOT be imported in Python" in execute_tool["function"]["description"]
+    assert "DO NOT use this to simply create/write web files (HTML/CSS) or data files" in execute_tool["function"]["description"]
+    assert "WARNING: Native tools CANNOT be imported in Python" in execute_tool["function"]["description"]
     
     # File System constraints
-    assert "ALWAYS use this to list, read, write, DOWNLOAD, rename, move, or delete files" in file_system_tool["function"]["description"]
+    assert "ALWAYS use this to list, read, write (including HTML, CSS, JS, JSON), DOWNLOAD, rename, move, or delete files" in file_system_tool["function"]["description"]
     assert "Do NOT write Python scripts for these tasks." in file_system_tool["function"]["description"]
     
     # Knowledge Base constraints

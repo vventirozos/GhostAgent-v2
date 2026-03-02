@@ -52,7 +52,10 @@ async def tool_read_file(filename: str, sandbox_dir: Path):
         if file_size > 150000: # ~150KB limit for raw reads
             return f"Error: File '{filename}' is too large to read entirely ({file_size / 1024:.1f} KB). Use file_system(operation='read_chunked', filename='{filename}') to read it page-by-page, operation='search' to find specific lines, operation='inspect' to read the first few lines, or write a Python script using the 'execute' tool to analyze it."
             
-        content = await asyncio.to_thread(path.read_text)
+        try:
+            content = await asyncio.to_thread(path.read_text)
+        except UnicodeDecodeError:
+            return f"Error: '{filename}' appears to be a binary file. You cannot read it as text. If it is an image, use the 'vision_analysis' tool."
         return content
     except ValueError as ve: return str(ve)
     except Exception as e: return f"Error: {e}"
@@ -62,6 +65,13 @@ async def tool_replace_text(filename: str, old_text: str, new_text: str, sandbox
     if not old_text: return "Error: You must specify the exact 'content' to be replaced."
     if new_text is None: return "Error: You must specify 'replace_with' (can be an empty string to delete)."
     
+    # Clean accidental markdown wrappers from the replacement blocks
+    ext = str(filename).split('.')[-1].lower()
+    if ext in ["py", "html", "css", "js", "ts", "json", "sh", "yaml", "yml", "csv", "xml"]:
+        from ..utils.sanitizer import extract_code_from_markdown
+        old_text = extract_code_from_markdown(str(old_text))
+        new_text = extract_code_from_markdown(str(new_text))
+        
     try:
         path = _get_safe_path(sandbox_dir, filename)
         if not path.exists(): return f"Error: '{filename}' not found."
@@ -107,6 +117,12 @@ async def tool_write_file(filename: str, content: Any, sandbox_dir: Path):
             content = json.dumps(content, indent=2)
         elif not isinstance(content, str):
             content = str(content)
+
+        # Strip accidental markdown wrappers for code/data files
+        ext = str(filename).split('.')[-1].lower()
+        if ext in ["py", "html", "css", "js", "ts", "json", "sh", "yaml", "yml", "csv", "xml"]:
+            from ..utils.sanitizer import extract_code_from_markdown
+            content = extract_code_from_markdown(content)
 
         path = _get_safe_path(sandbox_dir, filename)
         

@@ -3,6 +3,12 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
+// --- SPEED CONFIGURATION ---
+export const SPEEDS = {
+    idle: 0.75,
+    busy: 4.0,
+};
+
 // --- COLOR CONFIGURATION ---
 export const COLORS = {
     background: new THREE.Color('#000000'),
@@ -11,8 +17,8 @@ export const COLORS = {
     nodeActive: new THREE.Color('#005eff'),  // Dark Red
     nodeError: new THREE.Color('#ff00ee'),   // Electric Blue
 
-    lineBase: new THREE.Color('#380000'),    // Very Dark Red (lines)
-    lineActive: new THREE.Color('#4c0000'),  // Dark Red (lines)
+    lineBase: new THREE.Color('#300000'),    // Very Dark Red (lines)
+    lineActive: new THREE.Color('#450000'),  // Dark Red (lines)
     lineError: new THREE.Color('#00fff2'),   // Electric Blue
 };
 // ---------------------------
@@ -21,7 +27,7 @@ let scene, camera, renderer, composer, instancedMesh, linesMesh;
 let lineGeometry, nodeMaterial, lineMaterial;
 let time = 0;
 let shapeTime = 0;
-let currentShapeSpeed = 1.0;
+let currentShapeSpeed = SPEEDS.idle;
 let animationFrameId;
 
 let spikeStrength = 0.2;
@@ -278,7 +284,7 @@ function animate() {
     time += 0.005;
 
     // Structure changes form slowly when idle, faster when busy
-    let targetShapeSpeed = 1.0 + (workingState * 2.0); // 1x to 3x speed relative multiplier
+    let targetShapeSpeed = SPEEDS.idle + (workingState * (SPEEDS.busy - SPEEDS.idle));
     let speedDiff = targetShapeSpeed - currentShapeSpeed;
     if (Math.abs(speedDiff) > 0.001) {
         // Change by 2.0 over ~180 frames (3 seconds at 60fps) -> 0.011 per frame

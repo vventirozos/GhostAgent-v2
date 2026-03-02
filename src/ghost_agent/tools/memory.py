@@ -124,6 +124,9 @@ async def tool_gain_knowledge(filename: str, sandbox_dir: Path, memory_system):
         try:
             def _extract_text():
                 extracted = ""
+                binary_exts = ['.png', '.jpg', '.jpeg', '.gif', '.zip', '.tar', '.gz', '.sqlite', '.db', '.mp4', '.exe']
+                if any(filename.lower().endswith(ext) for ext in binary_exts):
+                    raise ValueError("Cannot ingest binary or media files into text memory.")
                 if filename.lower().endswith(".pdf"):
                     import fitz
                     doc = fitz.open(file_path)
@@ -263,6 +266,8 @@ async def tool_scratchpad(action: str, scratchpad: Scratchpad, key: str = None, 
     log_title = f"Scratch {action.upper()}"
     log_content = f"{key} = {value}" if value else key
     pretty_log(log_title, log_content, icon=icon)
+    if not scratchpad:
+        return "Error: Scratchpad memory is not initialized."
     if action == "set":
         return scratchpad.set(key, value)
     elif action == "get":
@@ -305,27 +310,22 @@ async def tool_knowledge_base(action: str, sandbox_dir: Path, memory_system, **k
         return await tool_unified_forget(target, sandbox_dir, memory_system, kwargs.get("profile_memory"))
 
     elif action == "list_docs":
-
+        if not memory_system: return "Error: Memory system is disabled."
         library = memory_system.get_library() or []
-
         return f"LIBRARY CONTENTS ({len(library)} files):\n" + "\n".join([f"- {doc}" for doc in library]) if library else "No docs."
 
     elif action == "reset_all":
-
+        if not memory_system: return "Error: Memory system is disabled."
         all_ids = memory_system.collection.get()['ids']
-
         if all_ids:
-
             for i in range(0, len(all_ids), 500): memory_system.collection.delete(ids=all_ids[i:i+500])
-
-        memory_system.library_file.write_text("[]")
-
+        if hasattr(memory_system, 'library_file'): memory_system.library_file.write_text("[]")
         return "Success: Wiped clean."
 
     elif action == "update_profile":
-        
-        cat = category or content
-        return await tool_update_profile(cat, key, value, profile_memory, memory_system) 
+                 
+        cat = category or target
+        return await tool_update_profile(cat, key, value, kwargs.get("profile_memory"), memory_system) 
 
     return f"Error: Unknown action '{action}'"
 
@@ -337,3 +337,12 @@ async def tool_dream_mode(context):
     dreamer = Dreamer(context)
     result = await dreamer.dream()
     return f"{result}\n\nSYSTEM: SESSION FINISHED. STAND BY."
+
+async def tool_self_play(context):
+    """
+    Manually triggers the Synthetic Self-Play curriculum.
+    """
+    from ..core.dream import Dreamer
+    dreamer = Dreamer(context)
+    result = await dreamer.synthetic_self_play()
+    return f"{result}\n\nSYSTEM: SELF PLAY DONE."

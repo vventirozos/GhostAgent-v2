@@ -12,6 +12,8 @@ run_proactive_task_fn = None
 
 async def tool_schedule_task(task_name: str, prompt: str, cron_expression: str, scheduler, memory_system):
     pretty_log("Task Schedule", f"Name: {task_name} | Expr: {cron_expression}", icon=Icons.BRAIN_PLAN)
+    if not scheduler:
+        return "Error: Background task scheduling is disabled or not available in this context."
     if run_proactive_task_fn is None:
         return "Error: Proactive task runner not initialized."
         
@@ -55,6 +57,8 @@ async def tool_schedule_task(task_name: str, prompt: str, cron_expression: str, 
 
 async def tool_stop_all_tasks(scheduler):
     pretty_log("Task Clear", "Deleting all scheduled jobs", icon=Icons.STOP)
+    if not scheduler:
+        return "Error: Background task scheduling is disabled or not available in this context."
     try:
         jobs = scheduler.get_jobs()
         if not jobs:
@@ -67,6 +71,8 @@ async def tool_stop_all_tasks(scheduler):
 
 async def tool_stop_task(task_identifier: str, scheduler):
     pretty_log("Task Stop", task_identifier, icon=Icons.STOP)
+    if not scheduler:
+        return "Error: Background task scheduling is disabled or not available in this context."
     jobs = scheduler.get_jobs()
     target_job = None
     for job in jobs:
@@ -83,6 +89,8 @@ async def tool_stop_task(task_identifier: str, scheduler):
 
 async def tool_list_tasks(scheduler):
     pretty_log("Task List", "Querying scheduler", icon=Icons.BRAIN_PLAN)
+    if not scheduler:
+        return "Error: Background task scheduling is disabled or not available in this context."
     jobs = scheduler.get_jobs()
     if not jobs:
         return "No active scheduled tasks."
@@ -92,6 +100,9 @@ async def tool_list_tasks(scheduler):
     return "\n".join(lines)
 
 async def tool_manage_tasks(action: str, scheduler, memory_system, task_name: str = None, cron_expression: str = None, prompt: str = None, task_identifier: str = None, **kwargs):
+    if not scheduler:
+        return "Error: Background task scheduling is disabled or not available in this context."
+    
     if action == "create":
         if not (task_name and cron_expression and prompt):
                 return "Error: 'create' requires task_name, cron_expression, and prompt."

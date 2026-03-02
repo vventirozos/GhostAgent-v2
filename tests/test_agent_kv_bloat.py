@@ -50,7 +50,7 @@ async def test_planner_kv_truncation_enforcement(mock_agent):
     # Extract the system prompt context string that received the `planner_transient` interpolation
     planner_messages = planner_payload.get("messages", [])
     # In the new structure, planner_transient is in the LAST system message (index 2)
-    user_planning_block = next((m["content"] for m in reversed(planner_messages) if m["role"] == "system"), "")
+    user_planning_block = next((m["content"] for m in reversed(planner_messages) if m["role"] == "user"), "")
     
     # 1. Assert the raw padding was successfully truncated by our logic to prevent out-of-memory errors
     # 2. We assert it's less than 1600 (1500 + length of '\n...[TRUNCATED]')

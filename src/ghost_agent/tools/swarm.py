@@ -44,7 +44,7 @@ async def tool_delegate_to_swarm(llm_client, model_name: str, scratchpad, tasks:
         return "Error: Scratchpad memory is not initialized."
 
     if getattr(llm_client, 'swarm_clients', None) is None or len(llm_client.swarm_clients) == 0:
-        return "SYSTEM WARNING: The Swarm Cluster is not configured (no --swarm-nodes provided). You must process this data yourself synchronously in your main loop."
+        return "SYSTEM WARNING: The Swarm Cluster is not configured (no --swarm-nodes provided). Do not use this tool anymore. You MUST process this task synchronously in your main context."
         
     if tasks is None:
         tasks = []

@@ -27,21 +27,32 @@ async def tool_execute(filename: str, content: str, sandbox_dir: Path, sandbox_m
     ext = str(filename).split('.')[-1].lower()
     if ext not in ["py", "sh", "js"]:
         pretty_log("Execution Blocked", f"Invalid extension: .{ext}", level="WARNING", icon=Icons.STOP)
-        tip = "To save data files, use 'file_system(operation=\"write\", ...)' instead."
+        tip = "To save data files or web pages (HTML/CSS/JS), use 'file_system(operation=\"write\", ...)' instead."
         return _format_error(f"SYSTEM ERROR: The 'execute' tool is ONLY for running scripts (.py, .sh, .js).\nSYSTEM TIP: {tip}")
 
     # 1. Holistic Sanitization
     content, syntax_error = sanitize_code(content, str(filename))
     
     if syntax_error:
-        # We block execution if syntax is clearly invalid to save a roundtrip
         pretty_log("Sanitization Failed", syntax_error, level="WARNING", icon=Icons.BUG)
+        
+        # HTML/Web guard for when the LLM pastes raw HTML into a Python script
+        if "<html" in content.lower() or "body {" in content.lower() or "<div" in content.lower() or "font-family:" in content.lower():
+            html_tip = "SYSTEM TIP: It looks like you are trying to write HTML, CSS, or JS intended for the browser. DO NOT use the 'execute' tool to create web pages. Use the 'file_system' tool with operation='write' to save the code directly to a file."
+            return _format_error(f"Syntax Error Detected: {syntax_error}\n\n{html_tip}")
+            
+        # We block execution if syntax is clearly invalid to save a roundtrip
         return _format_error(f"Syntax Error Detected: {syntax_error}\nPlease fix the code and try again.")
         
     # 2. Hard Sandbox Guard against Native Tool Imports
     # The LLM frequently hallucinates that native JSON tools are importable Python modules.
     if ext == "py":
-        forbidden_modules = ["knowledge_base", "system_utility", "file_system", "manage_tasks", "postgres_admin", "web_search", "fact_check", "deep_research"]
+        forbidden_modules = [
+            "knowledge_base", "system_utility", "file_system", "manage_tasks", 
+            "postgres_admin", "web_search", "fact_check", "deep_research", 
+            "vision_analysis", "delegate_to_swarm", "recall", "scratchpad", 
+            "learn_skill", "update_profile", "dream_mode", "replan"
+        ]
         
         # Check for direct imports or pip installs
         for mod in forbidden_modules:
